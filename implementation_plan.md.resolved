@@ -1,0 +1,184 @@
+# Internal QC Web App - Kế hoạch triển khai
+
+## Mô tả dự án
+
+Xây dựng một **web app nội bộ** cho công ty phục vụ quy trình kiểm soát chất lượng sản phẩm (QC). App cho phép chụp ảnh sản phẩm, nhập thông tin, quét số Serial Number (SN) từ file Excel để đối chiếu, và xuất báo cáo dạng file Word.
+
+Công nghệ ưu tiên **Java** (phù hợp với lộ trình học của bạn).
+
+---
+
+## Kiến trúc đề xuất
+
+### Backend: Spring Boot (Java)
+- Framework Java phổ biến nhất cho web backend
+- Xử lý tạo file Word (Apache POI)
+- Xử lý đọc file Excel (Apache POI)
+- Quản lý upload/download file
+- REST API cho frontend
+
+### Frontend: HTML + CSS + JavaScript (Mobile-Responsive)
+- Chạy trên mobile browser — không cần cài app
+- Giao diện tối ưu cho điện thoại
+- Camera capture ảnh trực tiếp từ mobile
+
+### Lý do chọn Web App thay vì Android App
+
+| Tiêu chí | Web App (Spring Boot) | Android App (Java) |
+|---|---|---|
+| Học Java | ✅ Spring Boot dùng Java nhiều | ✅ Android dùng Java |
+| Dễ deploy | ✅ Chạy trên mọi thiết bị | ❌ Cần cài APK |
+| Tốc độ phát triển | ✅ Nhanh hơn | ❌ Chậm hơn |
+| Test dễ | ✅ Mở browser là xong | ❌ Cần cài máy ảo |
+| Kết nối TrueNAS sau này | ✅ Dễ tích hợp | ⚠️ Phức tạp hơn |
+
+> **Kết luận**: Web App + Spring Boot là lựa chọn tối ưu nhất cho giai đoạn học Java và test tính năng. Sau này có thể build thêm Android App nếu cần.
+
+---
+
+## Tính năng chính (Giai đoạn 1 - Test)
+
+### 1. Màn hình chính (Dashboard)
+- Nút tạo báo cáo mới
+- Danh sách báo cáo đã tạo (lưu local)
+
+### 2. Form tạo báo cáo
+- **Loại báo cáo**: Cháy nổ / Trước sửa chữa / Sau sửa chữa (radio/select)
+- **Thông tin sản phẩm**:
+  - Tên sản phẩm
+  - Số Hợp đồng
+  - Số SN (từ quét hoặc nhập tay)
+  - Nhập tay SN (fallback nếu quét không ra)
+  - Ghi chú
+
+### 3. Chụp ảnh
+- Mở camera trực tiếp từ browser
+- Chụp và preview ảnh
+- Ảnh được đính kèm vào file Word
+
+### 4. Quét SN từ Excel
+- Upload file Excel lên
+- App đọc danh sách SN trong Excel
+- Đối chiếu với SN nhập vào / quét được
+- Hiển thị kết quả: ✅ Khớp / ❌ Không tìm thấy
+
+### 5. Xuất file Word
+- Tự động tạo file Word với:
+  - Thông tin sản phẩm
+  - Loại báo cáo
+  - Ảnh chụp đính kèm
+  - Kết quả đối chiếu SN
+  - Ghi chú
+- Tải file Word về thiết bị
+
+### 6. Lưu file
+- Lưu tạm vào thư mục trên server (test)
+- Sau này kết nối TrueNAS để lưu lên server công ty
+
+---
+
+## Cấu trúc dự án
+
+```
+qc-webapp/
+├── backend/                          # Spring Boot Project
+│   ├── src/main/java/
+│   │   └── com/company/qcapp/
+│   │       ├── QcAppApplication.java      # Main class
+│   │       ├── controller/
+│   │       │   ├── ReportController.java  # API endpoints
+│   │       │   └── FileController.java    # Upload/Download
+│   │       ├── service/
+│   │       │   ├── WordService.java       # Tạo file Word (Apache POI)
+│   │       │   ├── ExcelService.java      # Đọc Excel (Apache POI)
+│   │       │   └── ReportService.java     # Logic nghiệp vụ
+│   │       └── model/
+│   │           └── Report.java            # Data model
+│   ├── src/main/resources/
+│   │   ├── application.properties
+│   │   └── static/                        # Frontend files
+│   │       ├── index.html
+│   │       ├── css/style.css
+│   │       └── js/app.js
+│   └── pom.xml                            # Maven dependencies
+```
+
+---
+
+## Các thư viện Java sẽ dùng
+
+```xml
+<!-- Spring Boot Web -->
+<dependency>spring-boot-starter-web</dependency>
+
+<!-- Apache POI - Tạo Word & Đọc Excel -->
+<dependency>poi-ooxml (version 5.x)</dependency>
+
+<!-- Lombok - Giảm boilerplate code -->
+<dependency>lombok</dependency>
+
+<!-- Multipart File Upload -->
+<!-- Có sẵn trong Spring Boot Web -->
+```
+
+---
+
+## Luồng hoạt động (User Flow)
+
+```
+[Mở app] 
+    → [Chọn loại báo cáo: Cháy nổ / Trước / Sau sửa chữa]
+    → [Nhập thông tin: Tên SP, Số HĐ, SN, Ghi chú]
+    → [Upload file Excel] → [App đọc và hiển thị danh sách SN]
+    → [Chụp ảnh sản phẩm]
+    → [Đối chiếu SN với Excel] → [Hiển thị kết quả khớp/không khớp]
+    → [Tạo file Word] → [Tải về / Lưu vào server]
+```
+
+---
+
+## Kế hoạch triển khai theo giai đoạn
+
+### Giai đoạn 1: MVP (Hiện tại)
+- [ ] Khởi tạo Spring Boot project
+- [ ] Tạo giao diện frontend (HTML/CSS/JS) — Mobile responsive
+- [ ] Form nhập thông tin + chọn loại báo cáo
+- [ ] Chụp ảnh từ camera mobile
+- [ ] Upload & đọc file Excel — lấy danh sách SN
+- [ ] Đối chiếu SN với danh sách Excel
+- [ ] Xuất file Word (Apache POI)
+- [ ] Tải file Word về thiết bị
+
+### Giai đoạn 2: Mở rộng (Sau này)
+- [ ] Kết nối TrueNAS — lưu file lên server
+- [ ] Phân quyền người dùng (admin, user)
+- [ ] Lịch sử báo cáo
+- [ ] Tìm kiếm & lọc báo cáo
+- [ ] Thêm người dùng
+
+---
+
+## Yêu cầu môi trường
+
+- **Java**: JDK 17 hoặc 21
+- **Maven**: 3.x (build tool)
+- **IDE**: IntelliJ IDEA (khuyến nghị) hoặc VS Code + Extension Pack for Java
+
+---
+
+## Câu hỏi cần xác nhận
+
+> [!IMPORTANT]
+> **1. Bạn đã cài Java JDK chưa?** Nếu có, đang dùng version nào (17, 21)?
+
+> [!IMPORTANT]
+> **2. File Word đầu ra trông như thế nào?** Bạn có mẫu template Word hiện tại không? Hay cần tôi thiết kế layout mới?
+
+> [!IMPORTANT]  
+> **3. File Excel đầu vào có cấu trúc như thế nào?** SN nằm ở cột nào? Sheet nào? (Bạn có thể mô tả hoặc gửi file mẫu)
+
+> [!NOTE]
+> **4. Tên công ty / tên app muốn đặt là gì?** (Dùng trong giao diện và file Word)
+
+> [!NOTE]
+> **5. Logo công ty?** (Nếu muốn đưa vào giao diện và file Word)

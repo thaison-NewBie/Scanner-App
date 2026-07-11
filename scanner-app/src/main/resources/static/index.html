@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <title>Scanner - Kiểm Tra Thiết Bị</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/css/style.css?v=7"/>
+</head>
+<body>
+
+<!-- ── HEADER ─────────────────────────────────────────────────── -->
+<header class="app-header">
+  <div class="header-left">
+    <div class="app-logo">⚡</div>
+    <div>
+      <h1 class="app-title">Scanner</h1>
+      <p class="app-subtitle">Auto Scan Thiết bị</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="snStatus" class="sn-badge sn-empty">
+      <span class="badge-dot"></span>
+      <span id="snStatusText">Chưa tải Excel</span>
+    </div>
+  </div>
+</header>
+
+<!-- ── MAIN LAYOUT ────────────────────────────────────────────── -->
+<main class="main-layout">
+
+  <!-- ═══ LEFT PANEL ═══════════════════════════════════════════ -->
+  <aside class="left-panel">
+
+    <!-- BƯỚC 1: CÀI ĐẶT -->
+    <section class="card">
+      <div class="card-header">
+        <span class="step-badge">1</span>
+        <span class="step-title">CÀI ĐẶT</span>
+      </div>
+      <div class="card-body">
+        <div class="setup-row">
+          <label for="excelFile" class="btn btn-blue btn-sm">📂 Tải Excel Serial</label>
+          <input type="file" id="excelFile" accept=".xlsx,.xls" style="display:none"/>
+          <span id="excelStatus" class="status-text status-empty">Chưa có dữ liệu</span>
+        </div>
+        <p class="hint">Đọc toàn bộ cột — không cần cột cố định</p>
+
+        <div class="setup-divider"></div>
+        <div class="save-path-row">
+          <div class="save-path-label">
+            <span>💾</span><span>Nơi Lưu File</span>
+            <span id="savePathStatus" class="save-path-badge save-path-empty">Chưa chọn</span>
+          </div>
+          <div class="save-path-input-row">
+            <input type="text" id="savePathInput" class="form-input save-path-input"
+              placeholder="Nhập hoặc Browse thư mục..." readonly onclick="openBrowser('save')"/>
+            <button class="btn btn-blue btn-sm" onclick="openBrowser('save')">📁 Browse</button>
+            <button class="btn btn-outline btn-sm" onclick="clearSavePath()">✕</button>
+          </div>
+          <p class="hint">Tự động lưu file Word vào thư mục đã chọn</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- BƯỚC 2: NHẬP LIỆU -->
+    <section class="card">
+      <div class="card-header">
+        <span class="step-badge">2</span>
+        <span class="step-title">NHẬP LIỆU</span>
+      </div>
+      <div class="card-body">
+
+        <div class="form-group">
+          <label class="form-label req-label">Tên Thiết Bị <span class="req-star">*</span></label>
+          <input type="text" id="deviceName" class="form-input" placeholder="Nhập tên thiết bị"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label req-label">Mã Hàng Hóa (MHH) <span class="req-star">*</span></label>
+          <input type="text" id="productCode" class="form-input" placeholder="Nhập MHH"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label req-label">Số PO (Số Hợp đồng) <span class="req-star">*</span></label>
+          <input type="text" id="poNumber" class="form-input" placeholder="Nhập số PO"/>
+        </div>
+
+        <!-- Loại báo cáo -->
+        <div class="form-group">
+          <label class="form-label req-label">Loại báo cáo <span class="req-star">*</span></label>
+          <div class="radio-group">
+            <label class="radio-item">
+              <input type="radio" name="reportType" value="CHAY_NO"/>
+              <span class="radio-icon">🔥</span><span>Cháy Nổ</span>
+            </label>
+            <label class="radio-item">
+              <input type="radio" name="reportType" value="SAU_SCC" checked/>
+              <span class="radio-icon">🔧</span><span>Sau Sửa Chữa</span>
+            </label>
+            <label class="radio-item">
+              <input type="radio" name="reportType" value="TRUOC_SCC"/>
+              <span class="radio-icon">🔍</span><span>Trước Sửa Chữa</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Lỗi đã sửa chữa <span class="opt-label">(không bắt buộc)</span></label>
+          <textarea id="repairNotes" class="form-input form-textarea" placeholder="Nhập ghi chú/lỗi đã sửa..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label sn-manual-label">Serial Thủ Công
+            <span class="opt-label">(nếu Ảnh Zoom không đọc được SN)</span>
+          </label>
+          <input type="text" id="serialManual" class="form-input form-input-highlight"
+            placeholder="Để trống → sẽ hiện bảng đối chiếu với Excel..."/>
+          <p class="hint" style="color:#60a0ff">Nếu để trống và đã tải Excel → App hiện danh sách SN để đối chiếu với ảnh Zoom</p>
+        </div>
+
+        <div id="snCheckResult" class="sn-check-result hidden"></div>
+
+        <div class="form-group">
+          <label class="form-label">Nhật ký xử lý:</label>
+          <div id="logBox" class="log-box">
+            <span class="log-ready">✔ Sẵn sàng...</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </aside>
+
+  <!-- ═══ RIGHT PANEL ══════════════════════════════════════════ -->
+  <section class="right-panel">
+    <div class="card">
+      <div class="card-header">
+        <span class="step-badge">3</span>
+        <span class="step-title">HÌNH ẢNH <span class="hint-inline">(Yêu cầu 4 ảnh)</span></span>
+        <span id="imgCounter" class="img-counter">0 / 4</span>
+      </div>
+      <div class="card-body">
+        <div class="image-grid">
+
+          <!-- Ảnh 1: Toàn Cảnh -->
+          <div class="img-slot" id="slot1">
+            <div class="img-slot-header">
+              <span class="img-slot-num">1.</span>
+              <span class="img-slot-label">📷 Ảnh Toàn Cảnh</span>
+              <div class="img-slot-actions">
+                <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img1Gallery" accept="image/*" class="img-file-input"/></label>
+                <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img1Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
+                <button class="btn-icon btn-rotate" onclick="rotateImage(1)" title="Xoay 90°">↻</button>
+                <button class="btn-icon btn-clear" onclick="clearImage(1)" title="Xóa">✕</button>
+              </div>
+            </div>
+            <div class="img-preview-area" id="preview1">
+              <span class="placeholder-text">[Chưa chọn ảnh]</span>
+            </div>
+          </div>
+
+          <!-- Ảnh 2: Zoom Serial -->
+          <div class="img-slot" id="slot2">
+            <div class="img-slot-header">
+              <span class="img-slot-num">2.</span>
+              <span class="img-slot-label">🔍 Ảnh Zoom (Serial)</span>
+              <div class="img-slot-actions">
+                <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img2Gallery" accept="image/*" class="img-file-input"/></label>
+                <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img2Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
+                <button class="btn-icon btn-rotate" onclick="rotateImage(2)" title="Xoay 90°">↻</button>
+                <button class="btn-icon btn-clear" onclick="clearImage(2)" title="Xóa">✕</button>
+              </div>
+            </div>
+            <div class="img-preview-area" id="preview2">
+              <span class="placeholder-text">[Chưa chọn ảnh]</span>
+            </div>
+          </div>
+
+          <!-- Ảnh 3: Mặt Trước (có folder input) -->
+          <div class="img-slot" id="slot3">
+            <div class="img-slot-header">
+              <span class="img-slot-num">3.</span>
+              <span class="img-slot-label">📱 Ảnh Mặt Trước</span>
+              <div class="img-slot-actions">
+                <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img3Gallery" accept="image/*" class="img-file-input"/></label>
+                <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img3Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
+                <button class="btn-icon btn-rotate" onclick="rotateImage(3)" title="Xoay 90°">↻</button>
+                <button class="btn-icon btn-clear" onclick="clearImage(3)" title="Xóa">✕</button>
+              </div>
+            </div>
+            <!-- Folder input cho slot 3 -->
+            <div class="img-folder-row">
+              <span class="img-folder-icon">📂</span>
+              <input type="text" id="folder3" class="img-folder-input" readonly
+                placeholder="Folder ảnh mặt trước..." onclick="openBrowser('folder3')"/>
+              <button class="btn-icon-sm" onclick="openBrowser('folder3')" title="Chọn folder">📁</button>
+              <button class="btn-icon-sm btn-clear-sm" onclick="clearFolder(3)" title="Xóa">✕</button>
+            </div>
+            <div class="img-preview-area" id="preview3">
+              <span class="placeholder-text">[Chưa chọn ảnh]</span>
+            </div>
+          </div>
+
+          <!-- Ảnh 4: Mặt Sau (có folder input) -->
+          <div class="img-slot" id="slot4">
+            <div class="img-slot-header">
+              <span class="img-slot-num">4.</span>
+              <span class="img-slot-label">📱 Ảnh Mặt Sau</span>
+              <div class="img-slot-actions">
+                <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img4Gallery" accept="image/*" class="img-file-input"/></label>
+                <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img4Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
+                <button class="btn-icon btn-rotate" onclick="rotateImage(4)" title="Xoay 90°">↻</button>
+                <button class="btn-icon btn-clear" onclick="clearImage(4)" title="Xóa">✕</button>
+              </div>
+            </div>
+            <!-- Folder input cho slot 4 -->
+            <div class="img-folder-row">
+              <span class="img-folder-icon">📂</span>
+              <input type="text" id="folder4" class="img-folder-input" readonly
+                placeholder="Folder ảnh mặt sau..." onclick="openBrowser('folder4')"/>
+              <button class="btn-icon-sm" onclick="openBrowser('folder4')" title="Chọn folder">📁</button>
+              <button class="btn-icon-sm btn-clear-sm" onclick="clearFolder(4)" title="Xóa">✕</button>
+            </div>
+            <div class="img-preview-area" id="preview4">
+              <span class="placeholder-text">[Chưa chọn ảnh]</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ── BOTTOM BAR ─────────────────────────────────────────────── -->
+<div class="bottom-bar">
+  <div class="progress-wrap">
+    <div id="progressBar" class="progress-bar" style="width:0%"></div>
+  </div>
+  <div class="bottom-actions">
+    <div id="statusMsg" class="status-msg">Sẵn sàng</div>
+    <div class="bottom-btn-group">
+      <button class="btn-random" onclick="randomImages()" title="Random ảnh từ 2 folder mặt trước/sau">
+        🎲 Random<span class="hide-mobile"> Ảnh</span>
+      </button>
+      <button id="exportBtn" class="btn-export" onclick="exportReport()">
+        ⚡ <span class="hide-mobile">KIỂM TRA &amp; </span>TỰ ĐỘNG XUẤT<span class="hide-mobile"> FILE</span> ⚡
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── LOADING OVERLAY ────────────────────────────────────────── -->
+<div id="loadingOverlay" class="loading-overlay hidden">
+  <div class="loading-box">
+    <div class="spinner"></div>
+    <p id="loadingText">Đang xử lý...</p>
+  </div>
+</div>
+
+<!-- ── FUZZY MATCH MODAL ───────────────────────────────────────── -->
+<div id="fuzzyModal" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:900px; width:96vw; padding:0; display:flex; flex-direction:column; max-height:90vh;">
+    <!-- Header -->
+    <div class="modal-header" style="background:#1e1e2d; padding:10px 16px; border-bottom:1px solid #333; flex-shrink:0;">
+      <span class="modal-title" style="color:#64b5f6; display:flex; align-items:center; gap:8px;">
+        <span style="display:inline-block;width:12px;height:12px;background:#64b5f6;border-radius:3px;"></span>
+        🔍 Chọn Serial Đúng
+      </span>
+      <button class="modal-close" onclick="closeFuzzyModal()">✕</button>
+    </div>
+    <!-- Body: 2 cột -->
+    <div class="fuzzy-modal-body">
+
+      <!-- Cột trái: Ảnh Zoom to + Zoom được -->
+      <div id="fuzzyImgPanel" class="fuzzy-img-panel">
+        <div style="font-size:0.75em; color:#888; padding:8px 10px; border-bottom:1px solid #1a1a24; display:flex; align-items:center; justify-content:space-between;">
+          <span>🔍 Ảnh Zoom Serial (cuộn để zoom, kéo để pan)</span>
+          <button onclick="fuzzyZoomReset()" style="background:none;border:1px solid #444;color:#aaa;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:0.9em;">1:1</button>
+        </div>
+        <div id="fuzzyZoomWrap" style="flex:1; overflow:hidden; position:relative; cursor:grab;" onwheel="fuzzyZoomWheel(event)" onmousedown="fuzzyPanStart(event)">
+          <div id="fuzzyZoomImg" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; transform-origin:0 0; transition:none;">
+            <span style="color:#555;font-size:0.85em;">Chưa có ảnh Zoom (slot 2)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cột phải: Gợi ý + Nhập tay + Candidates -->
+      <div style="flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0;">
+
+        <!-- Tin nhắn -->
+        <div style="padding:12px 16px 6px; flex-shrink:0;">
+          <div id="fuzzyMessage" style="color:#ff9800; font-weight:bold; font-size:0.9em; line-height:1.4;"></div>
+        </div>
+
+        <!-- Gợi ý Excel -->
+        <div style="padding:0 16px 4px; font-size:0.8em; color:#aaa; flex-shrink:0;">Gợi ý từ Excel:</div>
+        <div id="fuzzyRadioContainer" style="overflow-y:auto; background:#1a1a24; border-top:1px solid #2a2a3a; padding:8px 16px; display:flex; flex-direction:column; gap:6px; max-height:160px; flex-shrink:0;"></div>
+
+        <!-- Nhập thủ công -->
+        <div style="padding:10px 16px 6px; flex-shrink:0; border-top:1px solid #252535;">
+          <div style="font-size:0.8em; color:#aaa; margin-bottom:5px;">✏️ Nhập số SN thủ công (nếu gợi ý sai):</div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="fuzzyManualInput" class="img-folder-input"
+              style="flex:1; padding:6px 10px; font-size:0.95em;"
+              placeholder="VD: BKA2020011384"
+              oninput="this.value=this.value.toUpperCase(); fuzzyFilterCandidates(this.value)" />
+            <button class="btn btn-blue btn-sm" onclick="confirmFuzzyManual()" style="white-space:nowrap;">Dùng số này</button>
+          </div>
+        </div>
+
+        <!-- Bảng đề xuất SN (candidates từ OCR, lọc theo nhập tay) -->
+        <div style="padding:0 16px 4px; font-size:0.8em; color:#aaa; flex-shrink:0;">Số SN quét được (nhấp để chọn):</div>
+        <div id="fuzzyCandTable" style="overflow-y:auto; flex:1; border-top:1px solid #2a2a3a; padding:6px 16px; display:flex; flex-direction:column; gap:4px;"></div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 16px; border-top:1px solid #333; background:#1e1e2d; flex-shrink:0;">
+      <button class="btn btn-outline btn-sm" onclick="closeFuzzyModal()" style="padding:7px 16px;">❌ Hủy bỏ</button>
+      <button class="btn btn-blue" onclick="confirmFuzzy()" style="padding:7px 20px;">✅ Chọn & Xuất File</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── FOLDER PICKER MODAL ──────────────────────────────────────── -->
+<div id="folderModal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title" id="folderModalTitle">📁 Chọn thư mục</span>
+      <button class="modal-close" onclick="closeBrowser()">✕</button>
+    </div>
+    <div class="modal-path-bar" style="display:flex;gap:5px;align-items:center;">
+      <button class="path-btn" onclick="browseTo('')">💻 Máy tính</button>
+      <span id="modalPathText" class="modal-path-text" style="flex:1;"></span>
+    </div>
+    <div class="modal-path-input-bar" style="padding: 5px 15px; display: flex; gap: 8px; border-bottom: 1px solid #333;">
+      <input type="text" id="manualPathInput" class="img-folder-input" style="flex:1; padding: 4px 8px;" placeholder="Hoặc dán đường dẫn (VD: D:\\Data\\HinhAnh)..." />
+      <button class="btn btn-outline btn-sm" onclick="browseTo(document.getElementById('manualPathInput').value)">Đi đến</button>
+    </div>
+    <div id="folderList" class="folder-list">
+      <div class="folder-loading">Đang tải...</div>
+    </div>
+    <div class="modal-footer">
+      <div id="selectedPathDisplay" class="selected-path-display">Chọn một thư mục bên dưới</div>
+      <div class="modal-btns">
+        <button class="btn btn-outline btn-sm" onclick="closeBrowser()">Hủy</button>
+        <button class="btn btn-blue btn-sm" id="confirmFolderBtn" onclick="confirmFolder()" disabled>✓ Chọn thư mục này</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── SN COMPARISON MODAL ──────────────────────────────────────── -->
+<div id="snModal" class="modal-overlay hidden">
+  <div class="modal-box modal-sn">
+    <div class="modal-header">
+      <span class="modal-title">🔍 Quét &amp; Đối chiếu Serial Number</span>
+      <button class="modal-close" onclick="closeSnModal()">✕</button>
+    </div>
+
+    <div class="sn-modal-body">
+      <!-- Left: Zoom image (click to fullscreen) -->
+      <div class="sn-zoom-panel">
+        <p class="sn-panel-label">📷 Ảnh Zoom — nhấn để xem lớn</p>
+        <div class="sn-zoom-img" id="snZoomImg" style="cursor:pointer"
+             onclick="openLightboxFromSrc(document.querySelector('#snZoomImg img')?.src, 'Ảnh Zoom Serial')">
+          <span class="placeholder-text">Chưa có ảnh Zoom</span>
+        </div>
+      </div>
+
+      <!-- Right: OCR results + Excel search -->
+      <div class="sn-list-panel">
+
+        <!-- OCR candidates -->
+        <div id="ocrSection">
+          <div class="ocr-status-line" id="ocrStatusLine">
+            <span id="ocrStatusText">⏳ Đang nhận dạng ảnh...</span>
+          </div>
+          <div class="ocr-result-box" id="ocrRawBox" style="display:none"></div>
+          <div class="ocr-candidates" id="ocrCandidates"></div>
+        </div>
+
+        <!-- Excel search -->
+        <p class="sn-panel-label" style="margin-top:10px;flex-shrink:0">
+          📋 Tìm trong Excel (<span id="snTotalCount">0</span> SN):
+        </p>
+        <div class="sn-search-row">
+          <input type="text" id="snSearchInput" class="form-input"
+            placeholder="🔎 Gõ tìm SN..." oninput="filterSNList(this.value)"/>
+        </div>
+        <div id="snListBox" class="sn-list-box">
+          <div class="folder-loading">Chưa tải...</div>
+        </div>
+
+        <div id="snSelectedDisplay" class="sn-selected-display hidden">
+          ✅ Đã chọn: <strong id="snSelectedValue"></strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <div class="modal-btns" style="width:100%;justify-content:space-between">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-outline btn-sm" onclick="closeSnModal()">Hủy</button>
+          <button class="btn btn-outline btn-sm" onclick="skipSnCheck()">⚠ Xuất không có SN</button>
+        </div>
+        <button class="btn btn-blue btn-sm" id="confirmSnBtn" onclick="confirmSN()" disabled>
+          ✓ Xác nhận SN &amp; Xuất file
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── LIGHTBOX FLOATING WINDOW ──────────────────────────────── -->
+<div id="lightbox" class="lightbox-overlay hidden" onclick="closeLightbox()">
+  <div class="lightbox-window" id="lightboxWin" onclick="event.stopPropagation()">
+    <!-- Title bar (draggable) -->
+    <div class="lightbox-titlebar" id="lbTitlebar">
+      <div class="lb-title-dots">
+        <div class="lb-dot lb-dot-red"    onclick="closeLightbox()" title="Đóng"></div>
+        <div class="lb-dot lb-dot-yellow" onclick="lbMinimize()"   title="Thu nhỏ"></div>
+        <div class="lb-dot lb-dot-green"  onclick="lbFitScreen()"  title="Vừa màn hình"></div>
+      </div>
+      <span class="lb-title-text" id="lbTitle">Ảnh — Lăn chuột: Zoom / Kéo: Pan</span>
+      <span class="lb-zoom-label" id="lbZoomPct">100%</span>
+    </div>
+    <!-- Canvas (pan & zoom area) -->
+    <div class="lightbox-canvas" id="lbCanvas">
+      <img id="lightboxImg" src="" alt="Zoom"/>
+    </div>
+    <!-- Toolbar -->
+    <div class="lb-toolbar">
+      <button class="lb-tbtn" onclick="lbZoomStep(-0.25)">🔍−</button>
+      <button class="lb-tbtn" onclick="lbReset()">↺ Reset</button>
+      <button class="lb-tbtn" onclick="lbZoomStep(0.25)">🔍+</button>
+      <button class="lb-tbtn" onclick="lightboxRotate()">↻ Xoay</button>
+      <button class="lb-tbtn" onclick="lbFitScreen()">⤢ Fit</button>
+    </div>
+  </div>
+</div>
+
+<!-- HTML5-QRCode Barcode Scanner -->
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+<!-- Tesseract.js OCR engine -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+<!-- Main logic -->
+<script src="/js/app.js?v=25"></script>
+</body>
+</html>
