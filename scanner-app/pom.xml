@@ -19,6 +19,7 @@
 
     <properties>
         <java.version>21</java.version>
+        <scanner.build.directory>target</scanner.build.directory>
     </properties>
 
     <dependencies>
@@ -69,6 +70,7 @@
     </dependencies>
 
     <build>
+        <directory>${scanner.build.directory}</directory>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

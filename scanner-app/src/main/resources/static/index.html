@@ -8,7 +8,7 @@
   <title>Scanner - Kiểm Tra Thiết Bị</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
-  <link rel="stylesheet" href="/css/style.css?v=7"/>
+  <link rel="stylesheet" href="/css/style.css?v=8"/>
 </head>
 <body>
 
@@ -333,7 +333,7 @@
       <button class="modal-close" onclick="closeBrowser()">✕</button>
     </div>
     <div class="modal-path-bar" style="display:flex;gap:5px;align-items:center;">
-      <button class="path-btn" onclick="browseTo('')">💻 Máy tính</button>
+      <button id="folderRootButton" class="path-btn" onclick="browseTo('')">📁 Vị trí</button>
       <span id="modalPathText" class="modal-path-text" style="flex:1;"></span>
     </div>
     <div class="modal-path-input-bar" style="padding: 5px 15px; display: flex; gap: 8px; border-bottom: 1px solid #333;">
@@ -449,6 +449,13 @@
 <!-- Tesseract.js OCR engine -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
 <!-- Main logic -->
-<script src="/js/app.js?v=25"></script>
+<dialog id="noticeDialog" aria-labelledby="noticeTitle" style="margin:auto;width:min(90vw,560px);padding:24px;border:1px solid #555;border-radius:16px;background:#1d1d32;color:#eee;">
+  <h3 id="noticeTitle" style="margin-bottom:16px;"></h3>
+  <p id="noticeDetail" style="overflow-wrap:anywhere;margin-bottom:24px;"></p>
+  <form method="dialog" style="text-align:right;">
+    <button id="noticeClose" class="btn btn-blue" autofocus>Đóng</button>
+  </form>
+</dialog>
+<script src="/js/app.js?v=43"></script>
 </body>
 </html>

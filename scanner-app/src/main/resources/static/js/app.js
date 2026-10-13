@@ -3,6 +3,7 @@ const state = {
   images:       { 1: null, 2: null, 3: null, 4: null },
   rotations:    { 1: 0,    2: 0,    3: 0,    4: 0    },
   imageFolders: { 3: '',   4: '' },
+  lastImageFolder: '',
   excelLoaded:  false,
   savePath:     '',
   // Dùng khi xuất file
@@ -10,15 +11,36 @@ const state = {
   selectedSN:    '',
   // Lưu tên file ảnh vừa chọn để gợi ý tên file tiếp theo
   lastImageName: '',
-  // Lưu Handle của thư mục gần nhất để mở lại đúng chỗ
-  lastDirectoryHandle: null,
+  // Vị trí và tên file dùng chung riêng cho bộ ảnh 1 ↔ 2
+  lastImageFolder12: '',
+  lastImageName12: '',
 };
 
 // ── DOM REFS ──────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
+function rememberPickerPath(path) {
+  state.lastImageFolder = path;
+}
+
+function resetBrowserMemory() {
+  state.lastImageFolder = '';
+  state.lastImageFolder12 = '';
+  state.lastImageName12 = '';
+  state.lastImageName = '';
+  try {
+    localStorage.removeItem('scanner.lastFolder34');
+    localStorage.removeItem('scanner.lastFolder12');
+    localStorage.removeItem('scanner.lastName12');
+  } catch (_) {}
+}
+
 // ── INIT ──────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  resetBrowserMemory();
+  await resetServerSession();
+  try { await loadStorageConfig(); }
+  catch (error) { addLog('❌ Không đọc được cấu hình thư mục: ' + error.message); }
   setupExcelUpload();
   setupImageInputs();
   ['deviceName','productCode','poNumber','serialManual'].forEach(id => {
@@ -31,6 +53,14 @@ document.addEventListener('DOMContentLoaded', () => {
   updateProgress();
   updateRepairNotesState();
 });
+
+async function resetServerSession() {
+  try {
+    await fetch('/api/session/reset', { method: 'POST' });
+  } catch (error) { console.warn('Không reset được phiên server', error); }
+}
+
+// Reset ở lần mở trang kế tiếp; không gửi beacon trễ có thể xóa phiên vừa tải lại.
 
 // ── GHI CHÚ — chỉ bật khi Cháy Nổ hoặc Sau Sửa Chữa ─────────
 function updateRepairNotesState() {
@@ -67,8 +97,10 @@ function setupExcelUpload() {
         $('snStatusText').textContent = `Excel: ${data.totalValues} SN`;
         addLog(`✔ Excel: ${data.filename} — ${data.totalValues} SN (${data.rowCount} dòng)`);
         if (data.sample?.length) addLog(`📋 Mẫu: ${data.sample.join(', ')}...`);
-        // Preload SN list for auto-export
-        fetch('/api/excel/list-sn').then(r => r.json()).then(d => { allSNList = d.sns || []; });
+        // Preload SN list cho cả desktop/mobile; request được dùng lại khi xuất.
+        allSNList = [];
+        _snListPromise = null;
+        loadExcelSNList().catch(error => addLog('⚠ Không preload được danh sách SN: ' + error.message));
       } else {
         addLog('❌ ' + (data.error || 'Không đọc được file'));
       }
@@ -82,17 +114,49 @@ function setupExcelUpload() {
 
 let _browserTarget = null;
 let _selectedFolderPath = '';
+let _browseRequest = 0;
+let _storageConfig = null;
+
+async function loadStorageConfig() {
+  if (_storageConfig) return _storageConfig;
+  const response = await fetch('/api/storage/config');
+  const config = await response.json();
+  if (!response.ok || !config.success) throw new Error('Không kết nối được server');
+  _storageConfig = config;
+  const foldersUnrestricted = config.foldersUnrestricted || !config.nasMode;
+  $('folderRootButton').textContent = foldersUnrestricted ? '💻 Vị trí máy tính' : '📁 Vị trí NAS';
+  if (foldersUnrestricted) $('manualPathInput').placeholder = 'Dán đường dẫn thư mục trên máy';
+  return config;
+}
 
 async function openBrowser(target) {
-  const initial = target === 'save'
-    ? (state.savePath || '')
-    : (state.imageFolders[parseInt(target.replace('folder', ''))] || '');
+  let config;
+  try { config = await loadStorageConfig(); }
+  catch (error) { showNotice('Không mở được bộ chọn thư mục', error.message); return; }
+  const isLocalWindows = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '::1';
+  const rememberedPath = target === 'save'
+    ? state.savePath
+    : (state.lastImageFolder || state.imageFolders[parseInt(target.replace('folder', ''))]);
+  // Explorer trên laptop luôn bắt đầu từ ổ C: khi chưa có vị trí đã chọn.
+  // Bộ chọn web bắt đầu từ danh sách ổ đĩa khi app được phép chọn mọi nơi.
+  const foldersUnrestricted = config.foldersUnrestricted || !config.nasMode;
+  const initial = rememberedPath || (isLocalWindows
+    ? 'C:\\'
+    : (foldersUnrestricted ? '' : (target === 'save' ? (config.reportsRoot || '') : (config.imagesRoot || ''))));
 
   // Nếu người dùng đang ngồi trực tiếp trên máy chủ (localhost), dùng hộp thoại Windows gốc cho nhanh
-  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+  // Khi dùng trực tiếp trên máy Windows chạy app, mở Explorer gốc như ứng dụng desktop.
+  // Điện thoại/máy khác vẫn dùng bộ chọn web.
+  if (isLocalWindows) {
     try {
+      addLog('📂 Đang mở Explorer Windows...');
       const res = await fetch('/api/native-pick-folder?initial=' + encodeURIComponent(initial));
       const data = await res.json();
+      if (!res.ok && !data.cancelled) throw new Error(data.error || 'Windows không mở được hộp thoại chọn thư mục');
+      if (data.cancelled) {
+        addLog('↩ Đã hủy chọn thư mục');
+        return;
+      }
       if (data.path) {
         if (target === 'save') {
           $('savePathInput').value = data.path;
@@ -100,6 +164,7 @@ async function openBrowser(target) {
         } else {
           const slot = parseInt(target.replace('folder', ''));
           state.imageFolders[slot] = data.path;
+          rememberPickerPath(data.path);
           $(target).value = data.path;
           addLog(`📁 Slot ${slot}: Chọn folder ${data.path}`);
         }
@@ -107,31 +172,40 @@ async function openBrowser(target) {
     } catch (e) {
       console.error(e);
       addLog('❌ Lỗi mở Native Picker: ' + e.message);
+      showNotice('Không mở được Explorer Windows', e.message);
     }
     return;
   }
 
   // Ngược lại (điện thoại, máy tính khác), dùng giao diện Web Modal
   _browserTarget = target;
+  $('manualPathInput').value = '';
+  $('manualPathInput').placeholder = target === 'save'
+    ? 'Dán đường dẫn thư mục lưu trên máy'
+    : 'Dán đường dẫn thư mục ảnh trên máy';
   $('folderModalTitle').textContent = target === 'save' ? '💾 Chọn nơi lưu file Word' : '📂 Chọn folder ảnh';
   $('folderModal').classList.remove('hidden');
   browseTo(initial);
 }
 
 function closeBrowser() {
+  _browseRequest++;
   $('folderModal').classList.add('hidden');
   _browserTarget = null;
 }
 
 async function browseTo(path) {
+  const request = ++_browseRequest;
+  const purpose = _browserTarget === 'save' ? 'reports' : 'images';
   $('folderList').innerHTML = '<div class="folder-loading">Đang tải...</div>';
   $('confirmFolderBtn').disabled = true;
   _selectedFolderPath = '';
   $('selectedPathDisplay').textContent = 'Đang tải...';
 
   try {
-    const res = await fetch('/api/browse?path=' + encodeURIComponent(path));
+    const res = await fetch('/api/browse?purpose=' + purpose + '&path=' + encodeURIComponent(path));
     const data = await res.json();
+    if (request !== _browseRequest) return;
     if (!data.success) throw new Error(data.error);
 
     $('modalPathText').textContent = data.current ? ' > ' + data.current : '';
@@ -141,11 +215,18 @@ async function browseTo(path) {
       $('selectedPathDisplay').textContent = 'Đang chọn: ' + data.current;
       $('confirmFolderBtn').disabled = false;
     } else {
-      $('selectedPathDisplay').textContent = 'Chọn một ổ đĩa / thư mục bên dưới';
+      $('selectedPathDisplay').textContent = 'Chọn một thư mục bên dưới';
     }
     
     const list = $('folderList');
     list.innerHTML = '';
+
+    if (data.warning) {
+      const warning = document.createElement('div');
+      warning.className = 'folder-empty';
+      warning.textContent = '⚠ ' + data.warning;
+      list.appendChild(warning);
+    }
 
     if (data.current) {
       const up = document.createElement('div');
@@ -156,7 +237,10 @@ async function browseTo(path) {
     }
 
     if (!data.entries || !data.entries.length) {
-      list.innerHTML += '<div class="folder-empty">Thư mục trống</div>';
+      const empty = document.createElement('div');
+      empty.className = 'folder-empty';
+      empty.textContent = 'Không có thư mục con. Có thể chọn thư mục hiện tại.';
+      list.appendChild(empty);
       return;
     }
 
@@ -170,7 +254,7 @@ async function browseTo(path) {
       leftDiv.style.alignItems = 'center';
       leftDiv.style.flex = '1';
       leftDiv.style.overflow = 'hidden';
-      leftDiv.innerHTML = `<span class="folder-icon" style="margin-right:8px">${icon}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${ent.name}</span><span style="color:#777;font-size:12px;margin-right:10px;">(Chạm để mở ➔)</span>`;
+      leftDiv.textContent = `${icon} ${ent.name} — Chạm để mở ➔`;
       leftDiv.onclick = () => browseTo(ent.path);
       
       item.appendChild(leftDiv);
@@ -194,7 +278,9 @@ async function browseTo(path) {
     });
 
   } catch (e) {
-    $('folderList').innerHTML = `<div class="folder-empty">❌ Lỗi: ${e.message}</div>`;
+    if (request !== _browseRequest) return;
+    $('folderList').textContent = '❌ ' + e.message;
+    $('selectedPathDisplay').textContent = 'Chưa chọn được thư mục';
   }
 }
 
@@ -203,11 +289,12 @@ async function confirmFolder() {
   
   if (_browserTarget === 'save') {
     $('savePathInput').value = _selectedFolderPath;
-    await setSavePath(_selectedFolderPath);
+    if (!await setSavePath(_selectedFolderPath)) return;
   } else {
     const slot = parseInt(_browserTarget.replace('folder', ''));
     $(`folder${slot}`).value = _selectedFolderPath;
     state.imageFolders[slot] = _selectedFolderPath;
+    rememberPickerPath(_selectedFolderPath);
     addLog(`📂 Folder ${slot === 3 ? 'Mặt Trước' : 'Mặt Sau'}: ${_selectedFolderPath}`);
   }
   
@@ -227,17 +314,24 @@ async function setSavePath(path) {
     });
     const data = await res.json();
     if (data.success) {
-      state.savePath    = path;
-      $('savePathInput').value = path;   // hiển thị đường dẫn trong input
+      state.savePath    = data.path;
+      $('savePathInput').value = data.path;
       badge.textContent = '✓ Đã chọn';
       badge.className   = 'save-path-badge save-path-ok';
       addLog(`💾 Nơi lưu file: ${path}`);
+      return true;
     } else {
       badge.textContent = '✗ Lỗi';
       badge.className   = 'save-path-badge save-path-error';
       addLog('❌ ' + (data.error || 'Lỗi đường dẫn'));
+      showNotice('Không chọn được nơi lưu', data.error || 'Lỗi đường dẫn');
     }
-  } catch (e) { addLog('❌ ' + e.message); } finally { hideLoading(); }
+  } catch (e) {
+    addLog('❌ ' + e.message);
+    showNotice('Không chọn được nơi lưu', e.message);
+  } finally { hideLoading(); }
+  $('savePathInput').value = state.savePath;
+  return false;
 }
 
 async function clearSavePath() {
@@ -291,6 +385,9 @@ function setupImageInputs() {
      */
     if (gal && !isMobile) {
       gal.addEventListener('click', async (e) => {
+        // Máy truy cập từ xa dùng bộ chọn ảnh của chính thiết bị đó.
+        if (!_storageConfig ||
+            !['localhost', '127.0.0.1'].includes(location.hostname)) return;
         // Nếu click là do code gọi lại (fallback), cho phép chạy tiếp
         if (e.isTrusted === false) return; 
 
@@ -312,69 +409,75 @@ function setupImageInputs() {
  * Sửa EXIF orientation của ảnh camera (iOS/Android thường xoay ảnh).
  * Trả về File mới đã được vẽ lại đúng chiều trên Canvas.
  */
-async function correctImageOrientation(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        // Đọc EXIF orientation
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
+ async function decodeImageIgnoringExif(file) {
+   // Đọc pixel thô rồi chỉ áp dụng EXIF một lần trong canvas. Điều này tránh
+   // lỗi xoay hai lần trên Safari/Chrome vốn đã tự hiển thị EXIF cho <img>.
+   if (typeof createImageBitmap === 'function') {
+     try {
+       return { image: await createImageBitmap(file, { imageOrientation: 'none' }), raw: true };
+     } catch (_) { /* fallback */ }
+   }
+   return await new Promise((resolve, reject) => {
+     const img = new Image();
+     const url = URL.createObjectURL(file);
+     img.onload = () => { URL.revokeObjectURL(url); resolve({ image: img, raw: false }); };
+     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Không đọc được ảnh')); };
+     img.src = url;
+   });
+ }
 
-        // Lấy orientation từ EXIF
-        getExifOrientation(file).then(orientation => {
-          let width = img.naturalWidth;
-          let height = img.naturalHeight;
+ async function correctImageOrientation(file) {
+   try {
+     const decoded = await decodeImageIgnoringExif(file);
+     const source = decoded.image;
+     const sourceW = source.width || source.naturalWidth;
+     const sourceH = source.height || source.naturalHeight;
+     if (!sourceW || !sourceH) return file;
 
-          // Giới hạn kích thước tối đa 2400px để giảm dung lượng gửi server
-          const MAX = 2400;
-          if (Math.max(width, height) > MAX) {
-            const ratio = MAX / Math.max(width, height);
-            width  = Math.round(width  * ratio);
-            height = Math.round(height * ratio);
-          }
+     // Fallback <img> thường đã tự áp dụng EXIF; chỉ đọc EXIF thủ công khi
+     // createImageBitmap thực sự trả về pixel thô.
+     const orientation = decoded.raw ? await getExifOrientation(file) : 1;
+     let width = sourceW;
+     let height = sourceH;
+     const MAX = 2400;
+     if (Math.max(width, height) > MAX) {
+       const ratio = MAX / Math.max(width, height);
+       width = Math.round(width * ratio);
+       height = Math.round(height * ratio);
+     }
 
-          // Xoay canvas theo EXIF
-          if (orientation >= 5) {
-            canvas.width  = height;
-            canvas.height = width;
-          } else {
-            canvas.width  = width;
-            canvas.height = height;
-          }
+     const swapsAxes = orientation >= 5 && orientation <= 8;
+     const canvas = document.createElement('canvas');
+     canvas.width = swapsAxes ? height : width;
+     canvas.height = swapsAxes ? width : height;
+     const ctx = canvas.getContext('2d', { alpha: false });
+     if (!ctx) return file;
+     ctx.fillStyle = '#fff';
+     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-          ctx.save();
-          switch (orientation) {
-            case 2: ctx.transform(-1, 0, 0, 1, width,  0);       break;
-            case 3: ctx.transform(-1, 0, 0, -1, width, height);  break;
-            case 4: ctx.transform(1,  0, 0, -1, 0,     height);  break;
-            case 5: ctx.transform(0,  1, 1,  0, 0,     0);       break;
-            case 6: ctx.transform(0,  1, -1, 0, height, 0);      break;
-            case 7: ctx.transform(0, -1, -1, 0, height, width);  break;
-            case 8: ctx.transform(0, -1, 1,  0, 0,     width);   break;
-            default: break;
-          }
-          ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight,
-                             0, 0, img.naturalWidth, img.naturalHeight);
-          ctx.restore();
+     // Ma trận chuẩn EXIF 1–8 theo kích thước pixel đã scale.
+     switch (orientation) {
+       case 2: ctx.setTransform(-1, 0, 0, 1, width, 0); break;
+       case 3: ctx.setTransform(-1, 0, 0, -1, width, height); break;
+       case 4: ctx.setTransform(1, 0, 0, -1, 0, height); break;
+       case 5: ctx.setTransform(0, 1, 1, 0, 0, 0); break;
+       case 6: ctx.setTransform(0, 1, -1, 0, height, 0); break;
+       case 7: ctx.setTransform(0, -1, -1, 0, height, width); break;
+       case 8: ctx.setTransform(0, -1, 1, 0, 0, width); break;
+       default: ctx.setTransform(1, 0, 0, 1, 0, 0);
+     }
+     ctx.drawImage(source, 0, 0, sourceW, sourceH, 0, 0, width, height);
+     source.close?.();
 
-          canvas.toBlob((blob) => {
-            if (!blob) { resolve(file); return; }
-            const corrected = new File([blob], file.name.replace(/\.heic$/i, '.jpg'), {
-              type: 'image/jpeg', lastModified: Date.now()
-            });
-            resolve(corrected);
-          }, 'image/jpeg', 0.92);
-        });
-      };
-      img.onerror = () => resolve(file);
-      img.src = e.target.result;
-    };
-    reader.onerror = () => resolve(file);
-    reader.readAsDataURL(file);
-  });
-}
+     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+     if (!blob) return file;
+     return new File([blob], (file.name || 'capture.jpg').replace(/\.[^.]+$/, '.jpg'), {
+       type: 'image/jpeg', lastModified: Date.now()
+     });
+   } catch (_) {
+     return file;
+   }
+ }
 
 /**
  * Đọc EXIF orientation từ JPEG header (không cần thư viện ngoài).
@@ -415,17 +518,16 @@ function getExifOrientation(file) {
 }
 
 /** 
- * Bộ chọn file thông minh: Tự điền tên file & Mở đúng thư mục cũ 
+ * Bộ chọn file thông minh: Mở đúng thư mục cũ và điền tên ảnh tồn tại kế tiếp.
  * Sử dụng NATIVE API để can thiệp được vào ô "File name" của Windows
  */
 async function smartPickFile(slot) {
-  const suggested = state.lastImageName ? incrementFileName(state.lastImageName) : '';
-  
-  // Lấy thư mục gốc từ lần chọn trước
-  let initDir = '';
-  if (state.lastDirectoryHandle && typeof state.lastDirectoryHandle === 'string') {
-    initDir = state.lastDirectoryHandle;
-  }
+  // Chỉ slot 1 và 2 dùng chung thư mục và tên file gợi ý.
+  const sharesPickerMemory = slot === 1 || slot === 2;
+  const initDir = sharesPickerMemory ? state.lastImageFolder12 : '';
+  const suggested = sharesPickerMemory
+    ? await nextExistingImageName(initDir, state.lastImageName12)
+    : '';
 
   try {
     // Gọi API Native của Java để mở hộp thoại Windows chuẩn
@@ -444,10 +546,12 @@ async function smartPickFile(slot) {
     if (data.success && data.path) {
       const fullPath = data.path;
       
-      // Lưu lại thư mục cha để lần sau mở đúng chỗ
       const lastSlash = fullPath.lastIndexOf('\\');
-      if (lastSlash > 0) {
-        state.lastDirectoryHandle = fullPath.substring(0, lastSlash);
+      if (sharesPickerMemory) {
+        const selectedDir = lastSlash > 0 ? fullPath.substring(0, lastSlash) : '';
+        if (selectedDir) {
+          state.lastImageFolder12 = selectedDir;
+        }
       }
 
       // Fetch file từ đường dẫn local qua proxy API của Java
@@ -474,40 +578,19 @@ async function smartPickFile(slot) {
 }
 
 /**
- * Tăng số ở cuối tên file lên 1 (áp dụng cho IMG_0740 → IMG_0741).
- * Giữ nguyên độ dài số (IMG_0740 không đổi thành IMG_741).
+ * Lấy đúng tên file ảnh tồn tại kế tiếp trong folder đang mở.
+ * Không tự cộng số, vì ảnh có thể đã bị xóa hoặc thứ tự chụp có thể bị đứt quãng.
  */
-function incrementFileName(name) {
-  // Tách phần mở rộng
-  const lastDot = name.lastIndexOf('.');
-  const base = lastDot >= 0 ? name.slice(0, lastDot) : name;
-  const ext  = lastDot >= 0 ? name.slice(lastDot)  : '';
-  // Tìm chuỗi số ở cuối base
-  const m = base.match(/(^.*?)(\d+)$/);
-  if (!m) return null;  // không có số ⇒ không gợi ý
-  const prefix  = m[1];
-  const numStr  = m[2];
-  const nextNum = String(parseInt(numStr, 10) + 1).padStart(numStr.length, '0');
-  return prefix + nextNum + ext;
-}
-
-/**
- * Khi mở file picker, đặt tên gợi ý vào tooltip/placeholder để hướng dẫn user.
- * Trên Windows, nếu dùng showOpenFilePicker (natively supported), ta set suggestedName.
- * Nếu không, hiển thị badge gợi ý bên cạnh nút.
- */
-function suggestNextFilename(inputEl) {
-  if (!state.lastImageName) return;
-  const suggested = incrementFileName(state.lastImageName);
-  if (!suggested) return;
-
-  // Tìm slot number từ id của input (img1Gallery, img2Gallery, ...)
-  const idMatch = inputEl.id.match(/(\d+)/);
-  if (!idMatch) return;
-  const slot = parseInt(idMatch[1]);
-
-  // Hiển thị badge gợi ý bên cạnh nút chọn file
-  showFilenameSuggestion(slot, suggested);
+async function nextExistingImageName(folder, afterName) {
+  if (!folder || !afterName) return '';
+  try {
+    const url = `/api/next-image?folder=${encodeURIComponent(folder)}&after=${encodeURIComponent(afterName)}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    return response.ok && data.success ? (data.name || '') : '';
+  } catch (_) {
+    return '';
+  }
 }
 
 /** Hiển thị badge gợi ý tên file cho slot */
@@ -537,24 +620,32 @@ function handleImageFile(slot, file) {
   state.images[slot]    = file;
   state.rotations[slot] = 0;
 
-  // Lưu tên file và tính tên gợi ý cho lần chọn tiếp theo
+  // Slot 1 và 2 chia sẻ vị trí/tên để mở lại đúng folder cho ảnh kế tiếp.
   state.lastImageName = file.name;
-  const nextName = incrementFileName(file.name);
-  if (nextName) {
-    // Tìm slot tiếp theo có ảnh để hiển badge gợi ý
-    const nextSlot = [1, 2, 3, 4].find(s => s !== slot && !state.images[s]);
-    if (nextSlot) showFilenameSuggestion(nextSlot, nextName);
+  if (slot === 1 || slot === 2) {
+    state.lastImageName12 = file.name;
+    void showNextExistingImageSuggestion(slot);
   }
 
   const reader = new FileReader();
   reader.onload = e => {
     renderPreview(slot, e.target.result);
-    // Auto-OCR khi upload Ảnh Zoom (slot 2)
-    if (slot === 2) triggerOCR(file);
+    // Chỉ quét khi người dùng bấm Kiểm tra & tự động xuất file.
+    if (slot === 2) {
+      _ocrResult = null;
+      setBadge2('ready', 'Sẵn sàng quét khi xuất file');
+    }
   };
   reader.readAsDataURL(file);
   addLog(`📷 Ảnh ${slot}: ${file.name}`);
   updateProgress();
+}
+
+async function showNextExistingImageSuggestion(slot) {
+  const nextSlot = slot === 1 ? 2 : (slot === 2 ? 1 : null);
+  if (!nextSlot || state.images[nextSlot]) return;
+  const nextName = await nextExistingImageName(state.lastImageFolder12, state.lastImageName12);
+  if (nextName) showFilenameSuggestion(nextSlot, nextName);
 }
 
 function renderPreview(slot, src) {
@@ -564,9 +655,23 @@ function renderPreview(slot, src) {
   preview.innerHTML = `<img src="${src}" alt="Ảnh ${slot}"
     style="width:100%;height:100%;object-fit:contain;transform:${getRotateTransform(deg)};transition:transform 0.4s ease;transform-origin:center"
     id="imgEl${slot}"
+    onload="fitMobilePreview(${slot}, this)"
     onclick="openLightboxFromSrc('${src}', '${labels[slot]}')"
     title="Nhấn để xem lớn"/>`;
   $(`slot${slot}`).classList.add('has-image');
+}
+
+function fitMobilePreview(slot, img) {
+  const preview = $(`preview${slot}`);
+  if (!preview || !img || !window.matchMedia('(max-width: 768px)').matches) return;
+  // Ảnh chụp thường là ảnh dọc; cho khung cao theo đúng tỉ lệ để không cắt ảnh.
+  const ratio = img.naturalWidth > 0 ? img.naturalHeight / img.naturalWidth : 1;
+  const width = preview.clientWidth || img.clientWidth || 1;
+  preview.style.aspectRatio = 'auto';
+  preview.style.height = `${Math.max(220, Math.round(width * ratio))}px`;
+  img.style.width = '100%';
+  img.style.height = '100%';
+  img.style.objectFit = 'contain';
 }
 
 // ── LIGHTBOX FLOATING WINDOW ──────────────────────────────────
@@ -802,7 +907,10 @@ function clearImage(slot) {
 }
 
 // ── RANDOM ẢNH TỪ FOLDER ─────────────────────────────────────
+let _randomBusy = false;
+
 async function randomImages() {
+  if (_randomBusy) return;
   const f3 = state.imageFolders[3];
   const f4 = state.imageFolders[4];
   if (!f3 && !f4) {
@@ -810,24 +918,39 @@ async function randomImages() {
     setStatusMsg('⚠ Cần chọn folder ảnh ở slot 3 hoặc 4', 'warn');
     return;
   }
+  _randomBusy = true;
+  const button = document.querySelector('.btn-random');
+  if (button) button.disabled = true;
   showLoading('Đang chọn ảnh ngẫu nhiên...');
-  const tasks = [];
-  if (f3) tasks.push(loadRandomImage(3, f3));
-  if (f4) tasks.push(loadRandomImage(4, f4));
-  await Promise.all(tasks);
-  hideLoading();
-  setStatusMsg('✅ Random ảnh thành công!', 'ok');
+  try {
+    const tasks = [];
+    if (f3) tasks.push(loadRandomImage(3, f3));
+    if (f4) tasks.push(loadRandomImage(4, f4));
+    const results = await Promise.all(tasks);
+    const loaded = results.filter(Boolean).length;
+    if (loaded === tasks.length) {
+      setStatusMsg('✅ Random ảnh thành công!', 'ok');
+    } else if (loaded > 0) {
+      setStatusMsg(`⚠ Đã random ${loaded}/${tasks.length} ảnh`, 'warn');
+    } else {
+      setStatusMsg('❌ Không random được ảnh. Kiểm tra lại folder ảnh.', 'err');
+    }
+  } finally {
+    _randomBusy = false;
+    if (button) button.disabled = false;
+    hideLoading();
+  }
 }
 
 async function loadRandomImage(slot, folder) {
   try {
     const res  = await fetch('/api/random-image?path=' + encodeURIComponent(folder));
     const data = await res.json();
-    if (!data.success) { addLog(`❌ Slot ${slot}: ${data.error}`); return; }
+    if (!res.ok || !data.success) { addLog(`❌ Slot ${slot}: ${data.error || 'Không tìm được ảnh'}`); return false; }
 
     // Fetch ảnh về dưới dạng blob qua /api/image proxy
     const imgRes = await fetch('/api/image?path=' + encodeURIComponent(data.path));
-    if (!imgRes.ok) { addLog(`❌ Slot ${slot}: Không đọc được ảnh`); return; }
+    if (!imgRes.ok) { addLog(`❌ Slot ${slot}: Không đọc được ảnh`); return false; }
 
     const blob = await imgRes.blob();
     const file = new File([blob], data.name, { type: blob.type || 'image/jpeg' });
@@ -837,8 +960,10 @@ async function loadRandomImage(slot, folder) {
     renderPreview(slot, src);
     addLog(`🎲 Slot ${slot}: ${data.name}`);
     updateProgress();
+    return true;
   } catch (e) {
     addLog(`❌ Slot ${slot}: ${e.message}`);
+    return false;
   }
 }
 
@@ -859,7 +984,31 @@ function updateProgress() {
 }
 
 // ── EXPORT REPORT ─────────────────────────────────────────────
+let _exportBusy = false;
 async function exportReport() {
+  if (_exportBusy) return;
+  _exportBusy = true;
+  $('exportBtn').disabled = true;
+  try { await checkAndExportReport(); }
+  catch (error) { addLog('❌ ' + error.message); setStatusMsg('❌ ' + error.message, 'err'); }
+  finally { _exportBusy = false; $('exportBtn').disabled = false; hideLoading(); }
+}
+
+function rankSerialSuggestions(candidates, serials) {
+  return serials.map(best => {
+    let score = 0;
+    for (const candidate of candidates) {
+      // Đối chiếu cả SN gốc và các nhầm lẫn OCR thường gặp, chỉ để gợi ý.
+      for (const text of [candidate, candidate.replace(/O/g, '0').replace(/I/g, '1').replace(/B/g, '8')]) {
+        score = Math.max(score, Math.round(levenshteinRatio(text, best) * 100));
+      }
+    }
+    return { best, score };
+  }).filter(item => item.score >= 80).sort((a, b) => b.score - a.score).slice(0, 5);
+}
+
+async function checkAndExportReport() {
+  state.pendingExport = null;
   const deviceName   = $('deviceName').value.trim();
   const productCode  = $('productCode').value.trim();
   const poNumber     = $('poNumber').value.trim();
@@ -887,6 +1036,11 @@ async function exportReport() {
 
   // Nếu không nhập Serial thủ công → kiểm tra OCR
   if (!serialManual) {
+    if (!state.images[2]) throw new Error('Vui lòng chọn ảnh Zoom (Serial) để quét.');
+    showLoading('Đang quét SN và đối chiếu Excel...');
+    if (state.excelLoaded) await loadExcelSNList();
+    await triggerOCR(state.images[2]);
+    hideLoading();
     if (state.excelLoaded) {
       // Thử tìm auto-match 100% hoặc lấy danh sách fuzzy
       let exactMatch = null;
@@ -897,51 +1051,32 @@ async function exportReport() {
         topCandidate = _ocrResult.candidates[0]; // best raw candidate
         for (const cand of _ocrResult.candidates) {
           if (allSNList.includes(cand)) { exactMatch = cand; break; }
-          const smart = smartMatchSerial(cand, allSNList);
-          if (smart && smart.score === 100) { exactMatch = smart.match; break; }
-
-          if (smart && smart.score >= 80) {
-             fuzzyMatches.push({ cand, best: smart.match, score: smart.score });
-          } else {
-             // Normal fuzzy
-             let best = null, bestScore = 0;
-             for (const sn of allSNList) {
-               const s = Math.round(levenshteinRatio(cand, sn) * 100);
-               if (s > bestScore) { bestScore = s; best = sn; }
-             }
-             if (bestScore >= 60) fuzzyMatches.push({ cand, best, score: bestScore });
-          }
         }
       }
 
       if (exactMatch) {
         // Tự động xuất file không cần mở bảng
         state.pendingExport = { deviceName, productCode, poNumber, reportType, repairNotes };
-        await doExport(exactMatch);
+        await doExport(exactMatch, { verifiedFromExcel: true });
         return;
       }
 
       // Lưu pending export data
       state.pendingExport = { deviceName, productCode, poNumber, reportType, repairNotes };
-
-      // Nếu có fuzzy match → mở bảng Fuzzy Modal (giống Python)
-      if (topCandidate && fuzzyMatches.length > 0) {
-         openFuzzyModal(topCandidate, fuzzyMatches);
-         return;
-      }
-
-      // Không có gì → mở bảng Search Modal lớn
-      openSnModal();
+      fuzzyMatches = rankSerialSuggestions(_ocrResult?.candidates || [], allSNList);
+      openFuzzyModal(topCandidate || '', fuzzyMatches);
       return;
     } else {
-      if (!confirm('Serial để trống và chưa có Excel để đối chiếu.\nBạn có muốn xuất file không có SN không?')) return;
+      state.pendingExport = { deviceName, productCode, poNumber, reportType, repairNotes };
+      openFuzzyModal(_ocrResult?.candidates?.[0] || '', []);
+      return;
     }
   }
 
   await doExport(serialManual);
 }
 
-async function doExport(serialNumber) {
+async function doExport(serialNumber, options = {}) {
   const { deviceName, productCode, poNumber, reportType, repairNotes } =
     state.pendingExport || {
       deviceName:  $('deviceName').value.trim(),
@@ -952,7 +1087,14 @@ async function doExport(serialNumber) {
     };
 
   // Kiểm tra SN với Excel
-  if (serialNumber && state.excelLoaded) {
+  if (serialNumber && state.excelLoaded && options.verifiedFromExcel) {
+    const box = $('snCheckResult');
+    box.classList.remove('hidden', 'sn-notfound');
+    box.className = 'sn-check-result sn-found';
+    box.textContent = `✅ SN "${serialNumber}" TÌM THẤY trong Excel`;
+    addLog(`✅ SN khớp Excel (đã xác nhận từ OCR): ${serialNumber}`);
+  }
+  if (serialNumber && state.excelLoaded && !options.verifiedFromExcel) {
     addLog(`🔍 Kiểm tra SN: ${serialNumber}...`);
     try {
       const snRes  = await fetch('/api/excel/check-sn', {
@@ -1012,6 +1154,12 @@ async function doExport(serialNumber) {
     // ── Nếu backend trả JSON → đã lưu server-side (có savePath) ──
     if (contentType.includes('application/json')) {
       const data = await res.json();
+      if (res.status === 409 && data.code === 'FILE_EXISTS') {
+        showNotice('File đã tồn tại, vui lòng kiểm tra lại', data.savedPath || data.filename);
+        addLog('⚠ File đã tồn tại: ' + data.filename);
+        setStatusMsg('⚠ File đã tồn tại, vui lòng kiểm tra lại', 'err');
+        return; // Giữ nguyên ảnh và dữ liệu để người dùng kiểm tra.
+      }
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Server lỗi ' + res.status);
       }
@@ -1034,7 +1182,15 @@ async function doExport(serialNumber) {
   } catch (e) {
     addLog('❌ Lỗi: ' + e.message);
     setStatusMsg('❌ Lỗi xuất file!', 'err');
+    showNotice('Không xuất được file Word', e.message);
   } finally { hideLoading(); }
+}
+
+function showNotice(message, detail = '') {
+  $('noticeTitle').textContent = message;
+  $('noticeDetail').textContent = detail;
+  if (!$('noticeDialog').open) $('noticeDialog').showModal();
+  $('noticeClose').focus();
 }
 
 /** Hiển thị toast thông báo lưu file thành công */
@@ -1061,15 +1217,17 @@ function showSavedToast(filename, savedPath) {
         Đã lưu thành công!
       </div>
       <div style="color:#e0ffe0;font-size:.82rem;word-break:break-all;opacity:.9">
-        ${filename}
+        <span data-saved-name></span>
       </div>
       <div style="color:#a0c0a0;font-size:.75rem;margin-top:4px;word-break:break-all;opacity:.7">
-        ${savedPath}
+        <span data-saved-path></span>
       </div>
     </div>
     <button onclick="this.closest('#saved-toast').remove()"
       style="background:none;border:none;color:#2ecc71;font-size:1.2rem;cursor:pointer;padding:0;line-height:1;opacity:.7">✕</button>
   `;
+  toast.querySelector('[data-saved-name]').textContent = filename;
+  toast.querySelector('[data-saved-path]').textContent = savedPath;
   document.body.appendChild(toast);
   // Tự ẩn sau 5 giây
   setTimeout(() => { if (toast.parentNode) toast.remove(); }, 5000);
@@ -1080,7 +1238,93 @@ function showSavedToast(filename, savedPath) {
 
 // ── SN COMPARISON MODAL + OCR ─────────────────────────────────
 let allSNList = [];
+let _snListPromise = null;
 let _ocrResult = null;   // { rawText, candidates: [{text, bestMatch, score}] }
+
+/**
+ * Lấy danh sách SN dùng chung cho cả desktop và mobile.
+ * Một promise dùng chung giúp tránh hai request /api/excel/list-sn nối tiếp
+ * khi người dùng vừa tải Excel vừa bấm xuất file ngay lập tức.
+ */
+function loadExcelSNList() {
+  if (allSNList.length) return Promise.resolve(allSNList);
+  if (!_snListPromise) {
+    _snListPromise = fetch('/api/excel/list-sn')
+      .then(response => {
+        if (!response.ok) throw new Error('Không tải được danh sách SN Excel.');
+        return response.json();
+      })
+      .then(data => {
+        allSNList = Array.isArray(data.sns) ? data.sns : [];
+        return allSNList;
+      })
+      .catch(error => {
+        _snListPromise = null;
+        throw error;
+      });
+  }
+  return _snListPromise;
+}
+
+/**
+ * Nén ảnh trước khi gửi /api/report/generate.
+ * WordService vẫn dùng chung ở server; bước này chỉ giảm dữ liệu upload từ
+ * điện thoại và tránh để trình duyệt phải gửi ảnh camera nhiều megapixel.
+ */
+function compressImageForWord(file, maxDimension = 1400, quality = 0.82) {
+  if (!file) return Promise.resolve(file);
+  // Ảnh JPEG nhỏ đã đủ nhẹ; bỏ qua canvas để tiết kiệm CPU trên điện thoại.
+  if (file.type === 'image/jpeg' && file.size && file.size <= 1200 * 1024) {
+    return Promise.resolve(file);
+  }
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    const finish = (result) => {
+      URL.revokeObjectURL(url);
+      resolve(result || file);
+    };
+    img.onload = () => {
+      const sourceW = img.naturalWidth || img.width;
+      const sourceH = img.naturalHeight || img.height;
+      if (!sourceW || !sourceH) { finish(file); return; }
+      const scale = Math.min(1, maxDimension / Math.max(sourceW, sourceH));
+      const width = Math.max(1, Math.round(sourceW * scale));
+      const height = Math.max(1, Math.round(sourceH * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) { finish(file); return; }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'medium';
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(blob => {
+        if (!blob) { finish(file); return; }
+        const base = (file.name || 'image').replace(/\.[^.]+$/, '') || 'image';
+        finish(new File([blob], `${base}.jpg`, {
+          type: 'image/jpeg', lastModified: Date.now()
+        }));
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => finish(file);
+    img.src = url;
+  });
+}
+
+async function prepareOcrImage(file) {
+  if (!file || !file.size || file.size <= 1500 * 1024) return file;
+  try {
+    const compact = await compressImageForWord(file, 1600, 0.86);
+    if (compact && compact.size < file.size) {
+      addLog(`📡 Ảnh OCR: ${Math.round(file.size / 1024)}KB → ${Math.round(compact.size / 1024)}KB`);
+      return compact;
+    }
+  } catch (_) { /* giữ ảnh gốc nếu trình duyệt không nén được */ }
+  return file;
+}
 
 // ── AUTO-CROP NHÃN/BARCODE (Variance-Based) ──────────────────
 /**
@@ -1335,7 +1579,7 @@ async function buildImageVariants(file) {
 
 async function runServerOcr(blob) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  const timeoutId = setTimeout(() => controller.abort(), 70000);
   try {
     const formData = new FormData();
     formData.append('image', blob, 'image.jpg');
@@ -1345,6 +1589,30 @@ async function runServerOcr(blob) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+const SERIAL_NOISE_PREFIXES = [
+  'MODEL','DATE','POWER','STATUS','INPUT','OUTPUT','TYPE','CLASS','PART',
+  'ITEM','REV','VER','VOLT','AMP','HZ','LOT','PN','FCC','IMEI','SIM',
+  'NOKIA','MADE','FINLAND','VIETNAM','MANUFACTURE','AUTOMATIC','TRANSFER','SWITCH'
+];
+
+function isLikelySerialCandidate(value) {
+  const candidate = String(value || '').toUpperCase();
+  // Excel là nguồn xác nhận cuối cùng: cho phép cả SN chỉ gồm số hoặc có
+  // dạng giống ngày nếu chuỗi đó thực sự nằm trong danh sách đã tải.
+  if (Array.isArray(allSNList) && allSNList.includes(candidate)) return true;
+  if (candidate.length < 8 || candidate.length > 30 || !/\d/.test(candidate)) return false;
+  if (/^(?:19|20)\d{6}$/.test(candidate)) return false;
+  if (SERIAL_NOISE_PREFIXES.some(prefix => candidate.startsWith(prefix))) return false;
+  const digitCount = (candidate.match(/\d/g) || []).length;
+  return digitCount >= 3 && digitCount / candidate.length >= 0.30;
+}
+
+function extractCandidates(text, noiseWords = []) {
+  const noise = new Set(noiseWords.map(value => String(value).toUpperCase()));
+  return [...new Set((text.toUpperCase().match(/[A-Z0-9]+(?:\.[A-Z0-9]+)*/g) || [])
+    .filter(value => isLikelySerialCandidate(value) && !noise.has(value)))];
 }
 
 async function triggerOCR(file) {
@@ -1365,7 +1633,10 @@ async function triggerOCR(file) {
       const res = await Html5Qrcode.scanFileV2(file, true);
       if (res && res.decodedText) {
         const clean = res.decodedText.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-        if (clean.length >= 6) {
+        // Chỉ kết thúc ở barcode phía trình duyệt khi khớp tuyệt đối Excel.
+        // Các barcode gần đúng (như "NO" dính vào S-No) tiếp tục sang ocr.py
+        // để quét riêng vùng SN giữa ảnh slot 2.
+        if (allSNList.includes(clean)) {
           addLog(`✅ Barcode: ${clean}`);
           setBadge2('found', `✅ ${clean}`);
           _ocrResult = { rawText: clean, candidates: [clean] };
@@ -1376,16 +1647,10 @@ async function triggerOCR(file) {
   }
   addLog('⚠ Không có barcode, chuyển sang OCR...');
 
-  // ── Bước 2: Tạo 4 biến thể ảnh ───────────────────────────────
-  setBadge2('running', '⏳ Bước 2: Tạo biến thể ảnh...');
-  addLog('🎨 Đang tạo 4 biến thể ảnh (Gốc / Tương phản / Đen trắng / Zoom)...');
-  const variants = await buildImageVariants(file);
-  if (!variants.length) {
-    addLog('❌ Không tạo được biến thể ảnh.');
-    setBadge2('fail', '❌ Lỗi ảnh');
-    return;
-  }
-  addLog(`✅ Đã tạo ${variants.length} biến thể.`);
+  // Giảm ảnh camera lớn trước khi upload; server vẫn dùng cùng ocr.py và
+  // tự xử lý các biến thể xoay/tăng tương phản ở phía backend.
+  const ocrFile = await prepareOcrImage(file);
+  const variants = [{ name: 'Quét sâu (ocr.py)', blob: ocrFile }];
 
   // ── Bước 3: OCR từng biến thể (fast-exit khi khớp Excel) ──────
   const allCandidates = new Set();
@@ -1396,8 +1661,9 @@ async function triggerOCR(file) {
 
     let cands = [];
     try {
-      // Gọi Server OCR (Tesseract CLI native)
+      // Gọi RapidOCR/PaddleOCR; lỗi engine cũng kích hoạt fallback.
       const data = await runServerOcr(blob);
+      if (!data.success) throw new Error(data.error || 'OCR không khả dụng');
       if (data.success && data.candidates) {
         cands = data.candidates;
         addLog(`📄 Server OCR [${name}] raw: ${data.rawText.replace(/\n/g,'|').substring(0,100)}`);
@@ -1430,26 +1696,16 @@ async function triggerOCR(file) {
           }
         }
 
-        // Smart Match (Sliding Window + Fuzzy) trên từng candidate
-        for (const c of cands) {
-          const smart = smartMatchSerial(c, allSNList);
-          if (smart && smart.score >= 80) {
-            addLog(`🧠 SmartMatch: "${c}" → "${smart.match}" (${smart.score}%) [${name}]`);
-            setBadge2('found', `✅ ~${smart.match}`);
-            _ocrResult = { rawText: c, candidates: [smart.match, ...cands] };
-            return;
-          }
-        }
       }
     }
   }
 
   // ── Bước 4: Tổng hợp kết quả (không có fast-exit) ─────────────
-  const rawCandidates = [...allCandidates].sort((a, b) => b.length - a.length);
+  const rawCandidates = [...allCandidates];
 
   if (rawCandidates.length) {
     setBadge2('found', `🔍 ${rawCandidates.length} chuỗi tìm thấy`);
-    addLog(`📊 Tổng candidates từ 4 biến thể: ${rawCandidates.join(', ')}`);
+    addLog(`📊 Kết quả quét sâu: ${rawCandidates.join(', ')}`);
   } else {
     setBadge2('fail', '❌ Không nhận ra chữ');
     addLog('⚠ OCR không nhận dạng được chuỗi SN nào từ bất kỳ biến thể nào');
@@ -1746,9 +2002,9 @@ function openFuzzyModal(scannedCandidate, fuzzyMatches) {
   }
 
   // ── Thông báo ──
-  msgBox.innerHTML = `⚠ Quét được: <b style="color:#fff">'${scannedCandidate}'</b>
-    <span style="color:#ff9800;"> — Không khớp Excel.</span>
-    <br/><span style="color:#aaa;font-size:0.85em;">Chọn gợi ý bên dưới hoặc nhập thủ công.</span>`;
+  msgBox.textContent = scannedCandidate
+    ? `SN quét được: ${scannedCandidate}. ${state.excelLoaded ? 'Không khớp chính xác Excel.' : 'Chưa tải Excel để đối chiếu.'} Chọn SN trước khi xuất Word.`
+    : 'Không đọc được SN từ ảnh. Nhập SN hoặc tìm trong danh sách Excel trước khi xuất Word.';
 
   // Xóa ô nhập tay
   if (manualInput) manualInput.value = '';
@@ -1764,10 +2020,10 @@ function openFuzzyModal(scannedCandidate, fuzzyMatches) {
     return lbl;
   };
 
-  container.appendChild(makeLabel(
+  if (scannedCandidate) container.appendChild(makeLabel(
     scannedCandidate,
     `<span style="color:#bbb;font-size:0.9em;">${scannedCandidate}
-      <i style="color:#666;font-size:0.85em;"> (Quét gốc — Không có trong Excel)</i></span>`
+      <i style="color:#666;font-size:0.85em;"> (SN quét gốc)</i></span>`, true
   ));
 
   // Deduplicate & sort
@@ -1782,9 +2038,15 @@ function openFuzzyModal(scannedCandidate, fuzzyMatches) {
       m.best,
       `<span style="color:#64b5f6;font-size:0.9em;">${m.best}
         <i style="color:#888;font-size:0.85em;"> (Gợi ý Excel — Giống ${m.score}%)</i></span>`,
-      idx === 0
+      false
     ));
   });
+
+  if (!uniqueMatches.length) {
+    const empty = document.createElement('div');
+    empty.textContent = 'SN tương tự trong Excel: không tìm thấy gợi ý đạt 80%.';
+    container.appendChild(empty);
+  }
 
   // ── Bảng OCR candidates ──
   fuzzyRenderCandidates('');
@@ -1934,7 +2196,9 @@ function downloadBlob(blob, filename) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Safari/iOS cần thêm thời gian đọc Blob sau click; revoke ngay lập tức
+  // khiến file Word không mở hoặc tải được trên điện thoại.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function getFilename(response) {

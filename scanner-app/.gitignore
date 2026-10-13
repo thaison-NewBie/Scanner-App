@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+tests/__pycache__/
+*.log
+/target/
+/target-*/
+.nas-process.json
+.env
+.env.*
+!.env.example
+application-local.properties

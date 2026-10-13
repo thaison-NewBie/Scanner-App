@@ -373,6 +373,11 @@ body {
 .btn-icon.btn-rotate:hover { background: rgba(96,192,255,0.12); border-color: rgba(96,192,255,0.4); }
 .btn-icon.btn-camera { color: var(--orange); }
 .btn-icon.btn-camera:hover { background: rgba(249,115,22,0.12); border-color: rgba(249,115,22,0.4); }
+
+/* Máy tính dùng bộ chọn file; camera chỉ hiển thị trên điện thoại. */
+@media (min-width: 769px) {
+  .btn-camera { display: none !important; }
+}
 .img-file-input {
   position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
 }
@@ -390,6 +395,7 @@ body {
 .img-preview-area img {
   width: 100%; height: 100%;
   object-fit: contain;
+  image-orientation: from-image;
   transition: transform 0.4s ease;
   transform-origin: center center;
 }
@@ -764,6 +770,7 @@ body {
   position: absolute; top: 0; left: 0;
   transform-origin: 0 0;
   max-width: none; max-height: none;
+  image-orientation: from-image;
   pointer-events: none; display: block;
 }
 
@@ -896,7 +903,8 @@ body {
     gap: 16px;
   }
   .img-slot { border-radius: var(--radius-lg); }
-  .img-preview-area { aspect-ratio: 16 / 10; height: auto; }
+  .img-preview-area { aspect-ratio: 16 / 10; height: auto; min-height: 220px; }
+  .img-preview-area img { object-fit: contain; }
   
   .img-slot-header { padding: 10px 14px; display: flex; align-items: center; gap: 8px; }
   .img-slot-label { font-size: 13px; flex: 1; }

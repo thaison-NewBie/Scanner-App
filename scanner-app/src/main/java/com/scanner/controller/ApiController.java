@@ -6,11 +6,14 @@ import com.google.zxing.client.j2se.BufferedImageLuminanceSource;
 import com.google.zxing.common.HybridBinarizer;
 import com.scanner.service.ExcelService;
 import com.scanner.service.WordService;
+import com.scanner.service.StorageService;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.context.annotation.SessionScope;
+import jakarta.servlet.http.HttpServletRequest;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -23,13 +26,20 @@ import java.util.*;
 
 @RestController
 @RequestMapping("/api")
+@SessionScope
 public class ApiController {
 
     @Autowired private ExcelService excelService;
     @Autowired private WordService wordService;
+    @Autowired private StorageService storageService;
 
-    // Lưu save path trong bộ nhớ (test mode)
-    private static String savePath = "";
+    // Nơi lưu thuộc phiên trình duyệt hiện tại, không dùng chung giữa các máy.
+    private String savePath = "";
+
+    @GetMapping("/storage/config")
+    public Map<String, Object> storageConfig() {
+        return storageService.config();
+    }
 
     // ── Status ────────────────────────────────────────────────────
     @GetMapping("/status")
@@ -41,67 +51,23 @@ public class ApiController {
         ));
     }
 
+    @PostMapping("/session/reset")
+    public ResponseEntity<Map<String, Object>> resetSession() {
+        excelService.clear();
+        savePath = "";
+        return ResponseEntity.ok(Map.of("success", true, "message", "Đã reset phiên làm việc"));
+    }
+
     // ── Browse Folders ────────────────────────────────────────────
     @GetMapping("/browse")
     public ResponseEntity<Map<String, Object>> browse(
-            @RequestParam(defaultValue = "") String path) {
+            @RequestParam(defaultValue = "") String path,
+            @RequestParam(defaultValue = "images") String purpose) {
         try {
-            List<Map<String, String>> entries = new ArrayList<>();
-
-            if (path.isEmpty()) {
-                // Trả về danh sách ổ đĩa (C:\, D:\, ...)
-                for (File root : File.listRoots()) {
-                    entries.add(Map.of(
-                        "name", root.getAbsolutePath(),
-                        "path", root.getAbsolutePath(),
-                        "type", "drive"
-                    ));
-                }
-                return ResponseEntity.ok(Map.of(
-                    "success", true,
-                    "current", "",
-                    "parent",  "",
-                    "entries", entries
-                ));
-            }
-
-            Path current = Paths.get(path);
-            if (!Files.exists(current) || !Files.isDirectory(current)) {
-                return ResponseEntity.badRequest().body(Map.of(
-                    "success", false, "error", "Thư mục không tồn tại"));
-            }
-
-            // Lấy danh sách thư mục con (bỏ qua hidden/system folders)
-            File[] files = current.toFile().listFiles();
-            if (files != null) {
-                for (File sub : files) {
-                    try {
-                        if (sub.isDirectory() && !sub.isHidden()) {
-                            entries.add(Map.of(
-                                "name", sub.getName(),
-                                "path", sub.getAbsolutePath(),
-                                "type", "folder"
-                            ));
-                        }
-                    } catch (Exception ignored) {}
-                }
-            }
-
-            entries.sort(Comparator.comparing(m -> m.get("name").toLowerCase()));
-
-            // Parent path
-            String parent = current.getParent() != null
-                ? current.getParent().toString() : "";
-
-            return ResponseEntity.ok(Map.of(
-                "success", true,
-                "current", current.toAbsolutePath().toString(),
-                "parent",  parent,
-                "entries", entries
-            ));
+            return ResponseEntity.ok(storageService.browse(path, purpose));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of(
-                "success", false, "error", e.getMessage()));
+                "success", false, "error", "Không liệt kê được thư mục. Kiểm tra kết nối/quyền truy cập, hoặc dán đường dẫn đầy đủ của thư mục PO vào ô bên trên: " + e.getMessage()));
         }
     }
 
@@ -115,28 +81,17 @@ public class ApiController {
             return ResponseEntity.ok(Map.of("success", true, "message", "Đã xóa nơi lưu file"));
         }
         try {
-            Path p = Paths.get(path);
-            if (!Files.exists(p)) {
-                Files.createDirectories(p);
-            }
-            if (!Files.isDirectory(p)) {
-                return ResponseEntity.badRequest().body(Map.of(
-                    "success", false, "error", "Đường dẫn không phải thư mục"));
-            }
-            if (!Files.isWritable(p)) {
-                return ResponseEntity.badRequest().body(Map.of(
-                    "success", false, "error", "Không có quyền ghi vào thư mục này"));
-            }
-            savePath = path;
+            Path p = storageService.saveDirectory(path);
+            savePath = p.toString();
             return ResponseEntity.ok(Map.of("success", true,
                 "message", "Đã chọn: " + path,
-                "path", path));
+                "path", savePath));
         } catch (InvalidPathException e) {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false, "error", "Đường dẫn không hợp lệ: " + e.getMessage()));
         } catch (IOException e) {
             return ResponseEntity.badRequest().body(Map.of(
-                "success", false, "error", "Lỗi tạo thư mục: " + e.getMessage()));
+                "success", false, "error", "Không chọn được nơi lưu: " + e.getMessage()));
         }
     }
 
@@ -183,7 +138,7 @@ public class ApiController {
         "      try { SetProcessDPIAware(); } catch {} \n" +
         "      var clsid=new Guid(\"DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7\");\n" + // CLSID_FileOpenDialog
         "      var iid=new Guid(\"D57C7288-D4AD-4768-BE02-9D969532D960\");\n" +   // IID_IFileOpenDialog
-        "      IntPtr pDlg; if(CoCreateInstance(ref clsid,IntPtr.Zero,1,ref iid,out pDlg)!=0) return null;\n" +
+        "      IntPtr pDlg; int createHr=CoCreateInstance(ref clsid,IntPtr.Zero,1,ref iid,out pDlg); if(createHr!=0) return \"__ERROR__:Không tạo được hộp thoại Windows (0x\" + createHr.ToString(\"X8\") + \")\";\n" +
         "      var dlg=(IFileOpenDialog)Marshal.GetObjectForIUnknown(pDlg);\n" +
         "      dlg.SetTitle(title);\n" +
         "      uint opt=0x00000008 | 0x00000002; // FOS_FORCEFILESYSTEM | FOS_PICKFOLDERS\n" +
@@ -194,17 +149,18 @@ public class ApiController {
         "        var siid=new Guid(\"43826D1E-E718-42EE-BC55-A1E261C37BFE\");\n" +
         "        IntPtr pi; if(SHCreateItemFromParsingName(init,IntPtr.Zero,ref siid,out pi)==0){dlg.SetFolder(pi); Marshal.Release(pi);}\n" +
         "      }\n" +
-        "      if(dlg.Show(IntPtr.Zero)!=0){ Marshal.Release(pDlg); return null; }\n" +
+        "      int showHr=dlg.Show(IntPtr.Zero);\n" +
+        "      if(showHr!=0){ Marshal.Release(pDlg); if(showHr==unchecked((int)0x800704C7)) return null; return \"__ERROR__:Windows từ chối mở hộp thoại (0x\" + showHr.ToString(\"X8\") + \")\"; }\n" +
         "      IntPtr pRes; dlg.GetResult(out pRes);\n" +
         "      var item=(IShellItem)Marshal.GetObjectForIUnknown(pRes);\n" +
         "      string path; item.GetDisplayName(0x80028000,out path);\n" +
         "      Marshal.Release(pRes); Marshal.Release(pDlg); return path;\n" +
-        "    } catch { return null; }\n" +
+                "    } catch(Exception e) { return \"__ERROR__:\" + e.Message; }\n" +
         "  }\n" +
         "}\n";
 
     private String getPickerDll() throws Exception {
-        String dllPath = System.getProperty("java.io.tmpdir") + "ScannerFP_v6.dll";
+        String dllPath = System.getProperty("java.io.tmpdir") + "ScannerFP_v8.dll";
         if (cachedDllPath != null && Files.exists(Paths.get(cachedDllPath)) && Files.size(Paths.get(cachedDllPath)) > 0) return cachedDllPath;
         synchronized (DLL_LOCK) {
             if (!Files.exists(Paths.get(dllPath))) {
@@ -217,11 +173,16 @@ public class ApiController {
                     "Add-Type -TypeDefinition $code -OutputAssembly '" + dllPath.replace("'","''") + "'\r\n";
                 Path compilePsFile = Files.createTempFile("compile", ".ps1");
                 Files.writeString(compilePsFile, compilePs, StandardCharsets.UTF_8);
-                new ProcessBuilder("powershell", "-NoProfile", "-NonInteractive",
+                Process compile = new ProcessBuilder("powershell", "-NoProfile", "-NonInteractive",
                     "-ExecutionPolicy", "Bypass", "-File", compilePsFile.toString())
-                    .redirectErrorStream(true).start().waitFor();
+                    .redirectErrorStream(true).start();
+                String compileOutput = new String(compile.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+                int compileExit = compile.waitFor();
                 Files.deleteIfExists(csFile);
                 Files.deleteIfExists(compilePsFile);
+                if (compileExit != 0 || !Files.exists(Paths.get(dllPath))) {
+                    throw new IOException("Không biên dịch được hộp thoại Windows: " + compileOutput);
+                }
             }
             cachedDllPath = dllPath;
         }
@@ -230,15 +191,29 @@ public class ApiController {
 
     @GetMapping("/native-pick-folder")
     public ResponseEntity<Map<String, Object>> nativePickFolder(
-            @RequestParam(defaultValue = "") String initial) {
+            @RequestParam(defaultValue = "") String initial,
+            HttpServletRequest request) {
+        if (!isLocalRequest(request)) return localPickerOnly();
         return runNativePicker("Chọn thư mục", initial, "", true);
     }
 
     @GetMapping("/native-pick-file")
     public ResponseEntity<Map<String, Object>> nativePickFile(
             @RequestParam(defaultValue = "") String initial,
-            @RequestParam(defaultValue = "") String suggested) {
+            @RequestParam(defaultValue = "") String suggested,
+            HttpServletRequest request) {
+        if (!isLocalRequest(request)) return localPickerOnly();
         return runNativePicker("Chọn tệp hình ảnh", initial, suggested, false);
+    }
+
+    private boolean isLocalRequest(HttpServletRequest request) {
+        try { return java.net.InetAddress.getByName(request.getRemoteAddr()).isLoopbackAddress(); }
+        catch (Exception ignored) { return false; }
+    }
+
+    private ResponseEntity<Map<String, Object>> localPickerOnly() {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("success", false,
+            "error", "Hộp thoại Explorer chỉ mở được khi dùng trực tiếp trên máy Windows chạy app"));
     }
 
     private ResponseEntity<Map<String, Object>> runNativePicker(String title, String initial, String suggested, boolean isFolder) {
@@ -258,10 +233,12 @@ public class ApiController {
 
             tmpScript = Files.createTempFile("fpRun", ".ps1");
             tmpScript.toFile().deleteOnExit();
-            Files.writeString(tmpScript, ps, StandardCharsets.UTF_8);
+            // Windows PowerShell 5 đọc UTF-8 không BOM theo ANSI: làm hỏng đường dẫn tiếng Việt.
+            Files.writeString(tmpScript, "\uFEFF" + ps, StandardCharsets.UTF_8);
 
             ProcessBuilder pb = new ProcessBuilder(
-                "powershell", "-NoProfile", "-NonInteractive",
+                // IFileOpenDialog là COM UI và bắt buộc phải chạy trên luồng STA.
+                "powershell", "-NoProfile", "-STA", "-NonInteractive",
                 "-ExecutionPolicy", "Bypass", "-File", tmpScript.toString());
             pb.redirectErrorStream(true);
             Process proc = pb.start();
@@ -271,6 +248,10 @@ public class ApiController {
 
             if (result.equals("__CANCELLED__") || result.isEmpty()) {
                 return ResponseEntity.ok(Map.of("success", false, "cancelled", true));
+            }
+            if (result.startsWith("__ERROR__:")) {
+                return ResponseEntity.status(500).body(Map.of("success", false,
+                    "error", "Windows không mở được hộp thoại chọn thư mục: " + result.substring("__ERROR__:".length())));
             }
             return ResponseEntity.ok(Map.of("success", true, "path", result));
         } catch (Exception e) {
@@ -330,22 +311,31 @@ public class ApiController {
     public ResponseEntity<Map<String, Object>> listFolderImages(
             @RequestParam String path) {
         try {
-            Path dir = Paths.get(path);
-            if (!Files.exists(dir) || !Files.isDirectory(dir)) {
-                return ResponseEntity.badRequest().body(Map.of(
-                    "success", false, "error", "Thư mục không tồn tại"));
-            }
-            List<String> images = new ArrayList<>();
-            try (var stream = Files.newDirectoryStream(dir, p -> {
-                String n = p.getFileName().toString().toLowerCase();
-                return n.endsWith(".jpg") || n.endsWith(".jpeg")
-                    || n.endsWith(".png") || n.endsWith(".bmp") || n.endsWith(".webp");
-            })) {
-                for (Path img : stream) images.add(img.toAbsolutePath().toString());
-            }
-            Collections.sort(images);
+            List<String> images = storageService.images(path).stream().map(Path::toString).toList();
             return ResponseEntity.ok(Map.of(
                 "success", true, "images", images, "count", images.size()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of(
+                "success", false, "error", e.getMessage()));
+        }
+    }
+
+    // ── Tên ảnh tồn tại kế tiếp trong cùng folder ─────────────────
+    @GetMapping("/next-image")
+    public ResponseEntity<Map<String, Object>> nextImage(
+            @RequestParam String folder,
+            @RequestParam String after) {
+        try {
+            Comparator<Path> byName = Comparator.comparing(
+                path -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER);
+            Path next = storageService.images(folder).stream()
+                .filter(path -> byName.compare(path,
+                    Paths.get(after).getFileName()) > 0)
+                .min(byName)
+                .orElse(null);
+            return ResponseEntity.ok(next == null
+                ? Map.of("success", true, "name", "")
+                : Map.of("success", true, "name", next.getFileName().toString()));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false, "error", e.getMessage()));
@@ -357,14 +347,7 @@ public class ApiController {
     public ResponseEntity<Map<String, Object>> randomImage(
             @RequestParam String path) {
         try {
-            Path dir = Paths.get(path);
-            List<Path> images = new ArrayList<>();
-            try (var stream = Files.newDirectoryStream(dir, p -> {
-                String n = p.getFileName().toString().toLowerCase();
-                return n.endsWith(".jpg") || n.endsWith(".jpeg") || n.endsWith(".png");
-            })) {
-                for (Path img : stream) images.add(img);
-            }
+            List<Path> images = storageService.images(path);
             if (images.isEmpty()) {
                 return ResponseEntity.ok(Map.of(
                     "success", false, "error", "Không có ảnh trong thư mục"));
@@ -385,14 +368,13 @@ public class ApiController {
     @GetMapping("/image")
     public ResponseEntity<byte[]> serveImage(@RequestParam String path) {
         try {
-            Path p = Paths.get(path);
-            if (!Files.exists(p) || Files.isDirectory(p)) {
-                return ResponseEntity.notFound().build();
-            }
+            Path p = storageService.image(path);
             byte[] data = Files.readAllBytes(p);
             String name = p.getFileName().toString().toLowerCase();
             MediaType mt = name.endsWith(".png") ? MediaType.IMAGE_PNG : MediaType.IMAGE_JPEG;
             return ResponseEntity.ok().contentType(mt).body(data);
+        } catch (AccessDeniedException e) {
+            return ResponseEntity.status(403).build();
         } catch (Exception e) {
             return ResponseEntity.internalServerError().build();
         }
@@ -412,6 +394,18 @@ public class ApiController {
             @RequestParam(value = "image3", required = false) MultipartFile image3,
             @RequestParam(value = "image4", required = false) MultipartFile image4) {
         try {
+            String safeSN = serialNumber.replaceAll("[^a-zA-Z0-9_\\-]", "_");
+            String prefix = switch (reportType) {
+                case "TRUOC_SCC" -> "TrcSC";
+                case "SAU_SCC" -> "SauSC";
+                case "CHAY_NO" -> "ChayNo";
+                default -> throw new IllegalArgumentException("Loại báo cáo không hợp lệ");
+            };
+            String rawName = prefix + "_" + safeSN + ".docx";
+            String selectedFolder = savePath;
+            Path dest = selectedFolder.isBlank() ? null : storageService.destination(selectedFolder, rawName);
+            // Trả thông báo trước khi xử lý ảnh nếu tên báo cáo đã tồn tại.
+            if (dest != null && Files.exists(dest, LinkOption.NOFOLLOW_LINKS)) return duplicateReport(dest);
             boolean snVerified = excelService.checkSN(serialNumber);
 
             // Convert MultipartFile → byte[] (để WordService xử lý song song)
@@ -425,22 +419,10 @@ public class ApiController {
                 reportType, repairNotes, serialNumber, snVerified, imageBytesList
             );
 
-            // Tên file
-            String safeSN = serialNumber.replaceAll("[^a-zA-Z0-9_\\-]", "_");
-            String prefix = switch (reportType) {
-                case "TRUOC_SCC" -> "TrcSC";
-                case "SAU_SCC"   -> "SauSC";
-                case "CHAY_NO"   -> "ChayNo";
-                default          -> reportType;
-            };
-            String rawName = prefix + "_" + safeSN + ".docx";
-
             // ── Đã cấu hình savePath: CHỈ LƯU server-side, không download ──
-            if (!savePath.isEmpty()) {
+            if (dest != null) {
                 try {
-                    Path dest = Paths.get(savePath, rawName);
-                    Files.write(dest, wordBytes, StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING);
+                    storageService.saveNew(dest, wordBytes);
                     return ResponseEntity.ok(Map.of(
                         "success",   true,
                         "saved",     true,
@@ -448,6 +430,8 @@ public class ApiController {
                         "savedPath", dest.toString(),
                         "message",   "Đã lưu: " + dest.toString()
                     ));
+                } catch (FileAlreadyExistsException e) {
+                    return duplicateReport(dest);
                 } catch (IOException e) {
                     System.err.println("[SavePath] Lỗi lưu file: " + e.getMessage());
                     return ResponseEntity.status(500).body(Map.of(
@@ -466,6 +450,8 @@ public class ApiController {
                 "attachment; filename*=UTF-8''" + encodedName);
             return new ResponseEntity<>(wordBytes, headers, HttpStatus.OK);
 
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("success", false, "error", e.getMessage()));
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.status(500).body(Map.of(
@@ -473,34 +459,60 @@ public class ApiController {
         }
     }
 
+    private ResponseEntity<Map<String, Object>> duplicateReport(Path path) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+            "success", false, "code", "FILE_EXISTS",
+            "error", "File đã tồn tại, vui lòng kiểm tra lại",
+            "filename", path.getFileName().toString(), "savedPath", path.toString()));
+    }
 
-    // ── Server-side OCR (ZXing Barcode + PaddleOCR via Python) ──────
-    private static final String PYTHON_EXE =
-        "C:\\Users\\Lecoo\\AppData\\Local\\Programs\\Python\\Python310\\python.exe";
+
+    // ── Server-side OCR (ZXing + RapidOCR/PaddleOCR via Python) ──────
+    private static final String PYTHON_EXE = resolvePythonExecutable();
+
+    private static String resolvePythonExecutable() {
+        String configured = System.getenv("SCANNER_PYTHON");
+        if (configured != null && !configured.isBlank()) return configured;
+        for (String relative : List.of(".venv/Scripts/python.exe", ".venv/bin/python")) {
+            Path executable = Paths.get(System.getProperty("user.dir"), relative);
+            if (Files.isRegularFile(executable)) return executable.toString();
+        }
+        return "python";
+    }
     private static final String OCR_SCRIPT =
         Paths.get(System.getProperty("user.dir"), "ocr.py").toString();
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
     // Timeout tối đa cho Python OCR (ms)
-    private static final long OCR_TIMEOUT_MS = 25_000;
+    private static final long OCR_TIMEOUT_MS = 60_000;
 
     /**
      * /api/ocr — Chiến lược 3 bước tối ưu tốc độ:
-     *   Bước 1 (Java, ~30ms): ZXing dual-binarizer + multi-angle + inverted-color
-     *   Bước 2 (Java, ~20ms): Preprocess ảnh (resize, sharpen) → lưu file tối ưu
-     *   Bước 3 (Python, nếu cần): PaddleOCR với timeout 25s
+     *   Bước 1 (Java, ~30ms): ZXing chỉ fast-exit khi khớp chính xác Excel
+     *   Bước 2: Giữ nguyên ảnh/EXIF và truyền danh sách SN Excel sang Python
+     *   Bước 3: RapidOCR/PaddleOCR quét vùng trung tâm ảnh slot 2, lọc chuỗi
+     *           có hình dạng SN; Python tự dừng
+     *           vòng biến thể sau 25s, Java giữ timeout 60s làm lớp an toàn
      */
     @PostMapping("/ocr")
     public ResponseEntity<Map<String, Object>> performOcr(
             @RequestParam("image") MultipartFile image) {
         Path tempImage = null;
+        Path tempSerials = null;
         try {
             byte[] rawBytes = image.getBytes();
+            List<String> knownSerials = excelService.getAllSN("");
 
-            // ── BƯỚC 1: ZXing trực tiếp trên bytes (không cần lưu file) ──
-            List<String> barcodeResults = scanBarcodesFromBytes(rawBytes);
-            if (!barcodeResults.isEmpty()) {
+            // ── BƯỚC 1: ZXing chỉ được phép dừng sớm khi khớp Excel ──────
+            // Nếu chưa có Excel, luôn chuyển sang ocr.py để quét vùng giữa
+            // slot 2; tránh trả về barcode/chuỗi ngoài vùng SN.
+            List<String> barcodeResults = knownSerials.isEmpty()
+                ? List.of()
+                : scanBarcodesFromBytes(rawBytes);
+            if (!barcodeResults.isEmpty()
+                    && barcodeResults.stream().anyMatch(knownSerials::contains)) {
+                barcodeResults = barcodeResults.stream().filter(knownSerials::contains).toList();
                 return ResponseEntity.ok(Map.of(
                     "success",    true,
                     "candidates", barcodeResults,
@@ -509,14 +521,17 @@ public class ApiController {
                 ));
             }
 
-            // ── BƯỚC 2: Preprocess + lưu ảnh tối ưu cho OCR ─────────────
+            // ── BƯỚC 2: Lưu ảnh gốc cho OCR ─────────────
             tempImage = Files.createTempFile("ocr_", ".jpg");
-            preprocessAndSave(rawBytes, tempImage);
+            // Giữ EXIF và chi tiết ảnh; Python xử lý hướng và kích thước một lần.
+            Files.write(tempImage, rawBytes);
+            tempSerials = Files.createTempFile("ocr_serials_", ".json");
+            Files.writeString(tempSerials, JSON.writeValueAsString(knownSerials), StandardCharsets.UTF_8);
 
-            // ── BƯỚC 3: Python PaddleOCR với timeout ─────────────────────
+            // ── BƯỚC 3: Python OCR với timeout ─────────────────────
             ProcessBuilder pb = new ProcessBuilder(
                 PYTHON_EXE, OCR_SCRIPT,
-                tempImage.toAbsolutePath().toString()
+                tempImage.toAbsolutePath().toString(), tempSerials.toAbsolutePath().toString()
             );
             pb.redirectErrorStream(false);
             Process process = pb.start();
@@ -569,12 +584,17 @@ public class ApiController {
             try {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> pyResult = JSON.readValue(stdout, Map.class);
+                if (pyResult.get("error") != null) {
+                    return ResponseEntity.ok(Map.of("success", false, "candidates", List.of(),
+                        "error", pyResult.get("error")));
+                }
                 @SuppressWarnings("unchecked")
                 List<String> pyCandidates = (List<String>) pyResult.getOrDefault("candidates", List.of());
                 candidates.addAll(pyCandidates);
                 method = (String) pyResult.getOrDefault("method", "ocr");
             } catch (Exception parseEx) {
-                if (!stdout.isEmpty() && !stdout.equals("NOT_FOUND")) candidates.add(stdout);
+                return ResponseEntity.internalServerError().body(Map.of(
+                    "success", false, "error", "OCR trả về dữ liệu không hợp lệ"));
             }
 
             return ResponseEntity.ok(Map.of(
@@ -593,6 +613,8 @@ public class ApiController {
         } finally {
             if (tempImage != null)
                 try { Files.deleteIfExists(tempImage); } catch (Exception ignored) {}
+            if (tempSerials != null)
+                try { Files.deleteIfExists(tempSerials); } catch (Exception ignored) {}
         }
     }
 
@@ -657,8 +679,12 @@ public class ApiController {
             BufferedImage bi = ImageIO.read(new java.io.ByteArrayInputStream(imageBytes));
             if (bi == null) return results;
 
+            // Chỉ quét vùng giữa của slot 2, nơi người dùng đặt barcode/SN.
+            // Giảm diện tích quét giúp barcode không làm chậm OCR khi ảnh không có mã.
+            bi = cropSerialCenterForBarcode(bi);
+
             // Resize nếu ảnh quá lớn (ZXing nhanh hơn với ảnh nhỏ hơn)
-            final int MAX_DIM = 1200;
+            final int MAX_DIM = 1000;
             int w = bi.getWidth(), h = bi.getHeight();
             if (Math.max(w, h) > MAX_DIM) {
                 double ratio = (double) MAX_DIM / Math.max(w, h);
@@ -728,6 +754,19 @@ public class ApiController {
             System.err.println("[ZXing] Lỗi: " + e.getMessage());
         }
         return results;
+    }
+
+    private BufferedImage cropSerialCenterForBarcode(BufferedImage source) {
+        int width = source.getWidth();
+        int height = source.getHeight();
+        if (width < 200 || height < 200) return source;
+
+        int left = Math.round(width * 0.08f);
+        int top = Math.round(height * 0.24f);
+        int cropWidth = Math.max(1, Math.round(width * 0.84f));
+        int cropHeight = Math.max(1, Math.round(height * 0.52f));
+        return source.getSubimage(left, top,
+            Math.min(cropWidth, width - left), Math.min(cropHeight, height - top));
     }
 
     /** Đảo màu BufferedImage (dùng cho barcode trắng nền tối) */

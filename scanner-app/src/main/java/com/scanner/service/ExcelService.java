@@ -2,17 +2,24 @@ package com.scanner.service;
 
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.annotation.SessionScope;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.*;
 
 @Service
+@SessionScope
 public class ExcelService {
 
-    // Dùng static để giữ data qua các request (test mode, chưa có DB)
-    private static Set<String> loadedSerialNumbers = new HashSet<>();
-    private static int rowCount = 0;
+    // Mỗi trình duyệt có Excel riêng; điện thoại không reset dữ liệu của laptop.
+    private Set<String> loadedSerialNumbers = new HashSet<>();
+    private int rowCount = 0;
+
+    public void clear() {
+        loadedSerialNumbers = new HashSet<>();
+        rowCount = 0;
+    }
 
     public Map<String, Object> loadExcel(MultipartFile file) throws IOException {
         loadedSerialNumbers = new HashSet<>();

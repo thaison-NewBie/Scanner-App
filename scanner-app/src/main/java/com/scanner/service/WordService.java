@@ -22,12 +22,21 @@ import java.util.concurrent.Executors;
 @Service
 public class WordService {
 
-    // EMU: 8.5cm × 6.4cm — vừa ô bảng Word 2 cột
-    private static final int IMG_W = (int) (8.5 * 360000);
-    private static final int IMG_H = (int) (6.4 * 360000);
+    private static final int TWIPS_PER_INCH = 1440;
+    private static final int EMU_PER_INCH = 914400;
 
-    // Kích thước tối đa trước khi nhúng vào Word (giảm tải AWT)
-    private static final int MAX_IMG_PX = 1200;
+    // Giữ đúng khổ của chương trình desktop gốc: mỗi ảnh 3.4 × 3.7 inch.
+    private static final int IMG_W = (int) (3.4 * EMU_PER_INCH);
+    private static final int IMG_H = (int) (3.7 * EMU_PER_INCH);
+    private static final int INFO_COL_WIDTH = 4 * TWIPS_PER_INCH;
+    private static final int IMAGE_COL_WIDTH = (int) (3.7 * TWIPS_PER_INCH);
+    private static final int IMAGE_ROW_HEIGHT = 4 * TWIPS_PER_INCH;
+    // python-docx Table Grid dùng lề ngang mặc định 108 twip cho nội dung trong ô.
+    private static final int TEXT_CELL_HORIZONTAL_PADDING = 108;
+
+    // Cùng chiến lược với mã desktop: giảm ảnh trước, cắt ở tâm rồi giảm lần cuối.
+    private static final int MAX_INPUT_PX = 1600;
+    private static final int MAX_EMBEDDED_IMG_PX = 1000;
 
     // Thread pool dùng chung cho xử lý ảnh song song
     private static final ExecutorService IMAGE_POOL =
@@ -66,6 +75,11 @@ public class WordService {
 
             // Lề chuẩn
             CTSectPr sectPr = doc.getDocument().getBody().addNewSectPr();
+            // Document() của python-docx mặc định dùng Letter 8.5 × 11 inch.
+            // Khai báo rõ để Word và trình render dùng cùng một khổ giấy.
+            CTPageSz pageSize = sectPr.isSetPgSz() ? sectPr.getPgSz() : sectPr.addNewPgSz();
+            pageSize.setW(BigInteger.valueOf((long) (8.5 * TWIPS_PER_INCH)));
+            pageSize.setH(BigInteger.valueOf(11L * TWIPS_PER_INCH));
             CTPageMar mar = sectPr.addNewPgMar();
             mar.setLeft(BigInteger.valueOf(792));
             mar.setRight(BigInteger.valueOf(792));
@@ -77,19 +91,23 @@ public class WordService {
             int infoRows = hasNotes ? 3 : 2;
 
             XWPFTable info = doc.createTable(infoRows, 2);
-            setTableWidth(info, 10440);
-            setColWidths(info, new int[]{5220, 5220});
+            configureTable(info, new int[]{INFO_COL_WIDTH, INFO_COL_WIDTH});
 
-            setCell(info.getRow(0).getCell(0), "MHH: " + s(productCode), false, 10);
-            setCell(info.getRow(0).getCell(1), "SN: "  + s(serialNumber), false, 10);
-            setCell(info.getRow(1).getCell(0), "Ten: " + s(deviceName),   false, 10);
-            setCell(info.getRow(1).getCell(1), "PO: "  + s(poNumber),     false, 10);
+            setCell(info.getRow(0).getCell(0), "MHH: " + s(productCode), false, 12,
+                ParagraphAlignment.LEFT);
+            setCell(info.getRow(0).getCell(1), "SN: "  + s(serialNumber), false, 12,
+                ParagraphAlignment.LEFT);
+            setCell(info.getRow(1).getCell(0), "Tên: " + s(deviceName),   false, 12,
+                ParagraphAlignment.LEFT);
+            setCell(info.getRow(1).getCell(1), "PO: "  + s(poNumber),     false, 12,
+                ParagraphAlignment.LEFT);
 
             if (hasNotes) {
                 String notesText = buildNotesText(reportType, repairNotes);
                 XWPFTableRow notesRow = info.getRow(2);
                 mergeHorizontal(notesRow.getCell(0), notesRow.getCell(1));
-                setCell(notesRow.getCell(0), notesText, false, 10);
+                setCell(notesRow.getCell(0), notesText, false, 12,
+                    ParagraphAlignment.LEFT);
             }
 
             doc.createParagraph();
@@ -97,8 +115,9 @@ public class WordService {
             // ── Bảng ảnh ─────────────────────────────────────────────────
             String[] caps = getCaptions(reportType);
             XWPFTable imgTable = doc.createTable(4, 2);
-            setTableWidth(imgTable, 10440);
-            setColWidths(imgTable, new int[]{5220, 5220});
+            configureTable(imgTable, new int[]{IMAGE_COL_WIDTH, IMAGE_COL_WIDTH});
+            setMinimumRowHeight(imgTable.getRow(1), IMAGE_ROW_HEIGHT);
+            setMinimumRowHeight(imgTable.getRow(3), IMAGE_ROW_HEIGHT);
 
             setCaptionCell(imgTable.getRow(0).getCell(0), caps[0]);
             setCaptionCell(imgTable.getRow(0).getCell(1), caps[1]);
@@ -119,7 +138,7 @@ public class WordService {
 
     /**
      * Đọc EXIF Orientation và xoay ảnh về đúng chiều vật lý.
-     * Tối ưu: resize ngay về MAX_IMG_PX trước khi xoay để giảm tải AWT.
+     * Sau đó cắt chính giữa theo cùng tỷ lệ 3.4 × 3.7 như ứng dụng desktop.
      */
     private byte[] correctExifOrientation(byte[] imageBytes) {
         try {
@@ -141,15 +160,19 @@ public class WordService {
             BufferedImage img = ImageIO.read(new ByteArrayInputStream(imageBytes));
             if (img == null) return imageBytes;
 
-            // 3. Resize sơ bộ trước khi xoay (giảm kích thước pixel → xoay nhanh hơn)
-            img = resizeIfLarge(img);
+            // 3. Resize sơ bộ trước khi xoay để giảm RAM/CPU.
+            img = resizeIfLarge(img, MAX_INPUT_PX);
 
             // 4. Xoay theo EXIF (bỏ qua nếu orientation = 1)
             if (orientation != 1) {
                 img = applyExifOrientation(img, orientation);
             }
 
-            // 5. Ghi lại thành JPEG
+            // 5. Cắt ảnh tại tâm đúng tỷ lệ khung Word, rồi giảm kích thước nhúng.
+            img = cropCenterToRatio(img, 3.4 / 3.7);
+            img = resizeIfLarge(img, MAX_EMBEDDED_IMG_PX);
+
+            // 6. Ghi lại thành JPEG
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             ImageIO.write(img, "JPEG", out);
             return out.toByteArray();
@@ -160,12 +183,12 @@ public class WordService {
         }
     }
 
-    /** Giới hạn kích thước ảnh về MAX_IMG_PX (nếu lớn hơn) */
-    private BufferedImage resizeIfLarge(BufferedImage src) {
+    /** Giới hạn cạnh dài của ảnh; dùng cho cả bước xử lý và ảnh nhúng. */
+    private BufferedImage resizeIfLarge(BufferedImage src, int maxPixels) {
         int w = src.getWidth(), h = src.getHeight();
-        if (w <= MAX_IMG_PX && h <= MAX_IMG_PX) return src;
+        if (w <= maxPixels && h <= maxPixels) return src;
 
-        float scale = (float) MAX_IMG_PX / Math.max(w, h);
+        float scale = (float) maxPixels / Math.max(w, h);
         int nw = Math.round(w * scale);
         int nh = Math.round(h * scale);
 
@@ -176,6 +199,35 @@ public class WordService {
         g.drawImage(src, 0, 0, nw, nh, null);
         g.dispose();
         return dst;
+    }
+
+    /** Cắt chính giữa để ảnh lấp đầy khung mà không bị kéo méo. */
+    private BufferedImage cropCenterToRatio(BufferedImage src, double targetRatio) {
+        int sourceWidth = src.getWidth();
+        int sourceHeight = src.getHeight();
+        double sourceRatio = (double) sourceWidth / sourceHeight;
+
+        if (Math.abs(sourceRatio - targetRatio) < 0.001) return src;
+
+        int cropWidth = sourceWidth;
+        int cropHeight = sourceHeight;
+        int x = 0;
+        int y = 0;
+        if (sourceRatio > targetRatio) {
+            cropWidth = Math.max(1, (int) Math.round(sourceHeight * targetRatio));
+            x = (sourceWidth - cropWidth) / 2;
+        } else {
+            cropHeight = Math.max(1, (int) Math.round(sourceWidth / targetRatio));
+            y = (sourceHeight - cropHeight) / 2;
+        }
+
+        BufferedImage cropped = new BufferedImage(cropWidth, cropHeight,
+            BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = cropped.createGraphics();
+        g.drawImage(src, 0, 0, cropWidth, cropHeight,
+            x, y, x + cropWidth, y + cropHeight, null);
+        g.dispose();
+        return cropped;
     }
 
     /** Xoay BufferedImage theo EXIF orientation (1-8) */
@@ -233,32 +285,45 @@ public class WordService {
         };
     }
 
-    private void setCell(XWPFTableCell cell, String text, boolean bold, int size) {
+    private void setCell(XWPFTableCell cell, String text, boolean bold, int size,
+                         ParagraphAlignment alignment) {
+        setTextCellPadding(cell);
         XWPFParagraph p = cell.getParagraphs().get(0);
+        p.setAlignment(alignment);
         XWPFRun r = p.createRun();
+        r.setFontFamily("Times New Roman");
         r.setBold(bold);
         r.setFontSize(size);
         r.setText(text);
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER);
+    }
+
+    /** Tạo khoảng thở giữa chữ và viền bảng, giống Table Grid của mã Python. */
+    private void setTextCellPadding(XWPFTableCell cell) {
+        CTTcPr tcPr = getOrCreateTcPr(cell);
+        CTTcMar mar = (tcPr.getTcMar() != null) ? tcPr.getTcMar() : tcPr.addNewTcMar();
+        mar.setLeft(tableCellMargin(TEXT_CELL_HORIZONTAL_PADDING));
+        mar.setRight(tableCellMargin(TEXT_CELL_HORIZONTAL_PADDING));
+    }
+
+    private CTTblWidth tableCellMargin(int twips) {
+        CTTblWidth margin = CTTblWidth.Factory.newInstance();
+        margin.setType(STTblWidth.DXA);
+        margin.setW(BigInteger.valueOf(twips));
+        return margin;
     }
 
     private void setCaptionCell(XWPFTableCell cell, String text) {
-        // Nền xám nhạt
-        CTTcPr tcPr = getOrCreateTcPr(cell);
-        CTShd shd = (tcPr.getShd() != null) ? tcPr.getShd() : tcPr.addNewShd();
-        shd.setVal(STShd.CLEAR);
-        shd.setColor("auto");
-        shd.setFill("D9D9D9");
-
-        XWPFParagraph p = cell.getParagraphs().get(0);
-        p.setAlignment(ParagraphAlignment.CENTER);
-        XWPFRun r = p.createRun();
-        r.setFontSize(9);
-        r.setText(text);
+        setCell(cell, text, false, 12, ParagraphAlignment.CENTER);
     }
 
     private void addImageCell(XWPFTableCell cell, List<byte[]> imgs, int idx) {
         XWPFParagraph p = cell.getParagraphs().get(0);
         p.setAlignment(ParagraphAlignment.CENTER);
+        p.setSpacingBefore(0);
+        p.setSpacingAfter(0);
+        p.setSpacingBetween(1.0);
+        cell.setVerticalAlignment(XWPFTableCell.XWPFVertAlign.CENTER);
 
         // Bỏ padding ô
         CTTcPr tcPr = getOrCreateTcPr(cell);
@@ -297,6 +362,32 @@ public class WordService {
         return (cell.getCTTc().getTcPr() != null)
             ? cell.getCTTc().getTcPr()
             : cell.getCTTc().addNewTcPr();
+    }
+
+    /** Đồng bộ với table.autofit = False và table.alignment = CENTER của mã Python. */
+    private void configureTable(XWPFTable table, int[] widths) {
+        int totalWidth = 0;
+        for (int width : widths) totalWidth += width;
+        setTableWidth(table, totalWidth);
+        setColWidths(table, widths);
+
+        CTTbl tbl = table.getCTTbl();
+        CTTblPr pr = tbl.getTblPr() != null ? tbl.getTblPr() : tbl.addNewTblPr();
+        CTTblLayoutType layout = pr.isSetTblLayout()
+            ? pr.getTblLayout() : pr.addNewTblLayout();
+        layout.setType(STTblLayoutType.FIXED);
+        CTJcTable jc = pr.isSetJc() ? pr.getJc() : pr.addNewJc();
+        jc.setVal(STJcTable.CENTER);
+    }
+
+    /** python-docx đặt row.height = 4 inch theo quy tắc tối thiểu. */
+    private void setMinimumRowHeight(XWPFTableRow row, int twips) {
+        CTTrPr trPr = row.getCtRow().isSetTrPr()
+            ? row.getCtRow().getTrPr() : row.getCtRow().addNewTrPr();
+        CTHeight height = trPr.sizeOfTrHeightArray() > 0
+            ? trPr.getTrHeightArray(0) : trPr.addNewTrHeight();
+        height.setVal(BigInteger.valueOf(twips));
+        height.setHRule(STHeightRule.AT_LEAST);
     }
 
     private void setTableWidth(XWPFTable table, int twips) {
