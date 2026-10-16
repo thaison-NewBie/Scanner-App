@@ -1,0 +1,51 @@
+name: scanner-test
+
+services:
+  scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: scanner-app:local
+    restart: unless-stopped
+    init: true
+    user: "${SCANNER_UID:-1000}:${SCANNER_GID:-1000}"
+    environment:
+      SERVER_ADDRESS: "0.0.0.0"
+      SERVER_PORT: "8080"
+      SERVER_SERVLET_SESSION_TIMEOUT: "8h"
+      SCANNER_PYTHON: "/opt/venv/bin/python"
+    command:
+      - "--scanner.storage.restricted=true"
+      - "--scanner.storage.images-root=/data/images"
+      - "--scanner.storage.reports-root=/data/reports"
+      - "--scanner.storage.images-unrestricted=false"
+      - "--scanner.storage.reports-unrestricted=false"
+    ports:
+      - "${SCANNER_BIND_ADDRESS:-127.0.0.1}:${SCANNER_PORT:-18080}:8080"
+    volumes:
+      - type: bind
+        source: "${SCANNER_IMAGES_DIR:-./docker-data/images}"
+        target: /data/images
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SCANNER_REPORTS_DIR:-./docker-data/reports}"
+        target: /data/reports
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - /opt/venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5).read(1)"
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

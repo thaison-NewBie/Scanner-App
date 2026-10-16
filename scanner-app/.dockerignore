@@ -1,0 +1,8 @@
+# Only application source is sent to the Docker build.
+**
+!Dockerfile
+!pom.xml
+!requirements-ocr.txt
+!ocr.py
+!src/
+!src/**

@@ -10,14 +10,14 @@ Web nội bộ để chụp ảnh tổng quan và SN trên điện thoại, lấ
 - Tạo lại môi trường Python từ `requirements-ocr.txt` trên máy đích; không chép `.venv` giữa Windows và Linux. Model riêng trong `models/` là tùy chọn; nếu không có thì dùng model đi kèm RapidOCR.
 - Bản hiện tại không cần database hoặc Microsoft Office.
 
-Hướng dẫn chạy Windows: [README-NAS.md](README-NAS.md). Cài OCR: [README-OCR.md](README-OCR.md).
+Hướng dẫn chạy Windows: [README-NAS.md](README-NAS.md). Cài OCR: [README-OCR.md](README-OCR.md). Chạy Docker trên Ubuntu: [README-DOCKER.md](README-DOCKER.md).
 
 ## Thứ tự triển khai thử lên IBM x3250 M3
 
 1. Commit/push mã nguồn lên GitHub. Đây là lưu phiên bản, chưa triển khai app.
 2. Kiểm tra bản hệ điều hành, CPU, RAM, ổ đĩa và IP máy IBM. Với Linux, dùng `cat /etc/os-release`, `lscpu`, `free -h`, `df -h`, `ip -br -4 addr`. Chưa cài lại hệ điều hành hoặc thay đổi RAID khi chưa kiểm tra dữ liệu.
-3. Chọn chạy Java/Python trực tiếp hoặc Docker. Lần thử đầu chạy trực tiếp giúp giảm các bước cấu hình; Docker là phương án đóng gói sau khi xác định môi trường.
-4. Build JAR trên laptop và chuyển JAR, `ocr.py`, `requirements-ocr.txt` cùng cấu hình sang IBM; hoặc clone repository rồi build trên IBM. Cài Java 21 và môi trường Python phù hợp, thử OCR trên CPU thật.
+3. Nếu Ubuntu đã có Docker Engine và Docker Compose, dùng [README-DOCKER.md](README-DOCKER.md). Dockerfile chuẩn bị Java/Python trong image, không cần cài chúng riêng trên Ubuntu. Có thể chạy trực tiếp nếu không dùng Docker.
+4. Clone repository rồi build trên IBM theo hướng dẫn Docker; thử OCR trên CPU thật. Nếu chạy trực tiếp, build JAR, cài Java 21 và Python cùng thư viện OCR, đặt `ocr.py` cạnh JAR trong thư mục làm việc.
 5. Cấu hình cổng 18080, địa chỉ lắng nghe LAN và firewall cho nhóm thiết bị thử. Điện thoại vào IP của IBM, không vào `localhost` hoặc IP của NAS. Chỉ mở LAN sau khi kiểm tra quyền truy cập của app.
 6. Thử bằng ảnh/Excel mẫu và thư mục báo cáo riêng. Kiểm tra ảnh ngang/dọc, SN đúng/sai, gợi ý Excel, Word và báo trùng tên.
 7. Khi thử cục bộ đạt, kết nối NAS. Linux dùng mount SMB; Windows dùng UNC. Tài khoản backend đọc ảnh và ghi báo cáo vào phạm vi được cấp quyền. Không lưu mật khẩu NAS trong Git hoặc JavaScript.
@@ -32,7 +32,7 @@ Với app này, nếu dùng Docker, một container có thể chứa JAR (đã g
 
 Ảnh và Word phải nằm ở thư mục được mount từ máy chủ/NAS vào container, để không mất khi thay container. Container Linux dùng đường dẫn Linux; không sử dụng trực tiếp đường dẫn ổ C/D hoặc hộp thoại Windows. Chạy container Linux trên server Windows cần môi trường Linux tương thích (ví dụ VM Linux), không chỉ sao chép image rồi chạy như ứng dụng Windows.
 
-Repository hiện chưa có Dockerfile/Compose hoặc cấu hình dịch vụ đã kiểm thử trên IBM. Push GitHub không tự tạo hay chạy các thành phần đó.
+Repository có Dockerfile và Docker Compose cho bản thử Ubuntu. Làm theo [README-DOCKER.md](README-DOCKER.md) để build và kiểm tra trên máy IBM; cấu hình này chưa được xác nhận chạy thực tế trên IBM. Push GitHub không tự triển khai container.
 
 ## Kiểm tra trước khi phát hành
 
