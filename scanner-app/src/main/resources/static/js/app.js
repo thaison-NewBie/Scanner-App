@@ -90,17 +90,7 @@ function setupExcelUpload() {
       const res  = await fetch('/api/excel/upload', { method: 'POST', body: form });
       const data = await res.json();
       if (data.success) {
-        state.excelLoaded = true;
-        $('excelStatus').textContent  = `✓ ${data.filename} — ${data.totalValues} SN`;
-        $('excelStatus').className    = 'status-text status-ok';
-        $('snStatus').className       = 'sn-badge sn-loaded';
-        $('snStatusText').textContent = `Excel: ${data.totalValues} SN`;
-        addLog(`✔ Excel: ${data.filename} — ${data.totalValues} SN (${data.rowCount} dòng)`);
-        if (data.sample?.length) addLog(`📋 Mẫu: ${data.sample.join(', ')}...`);
-        // Preload SN list cho cả desktop/mobile; request được dùng lại khi xuất.
-        allSNList = [];
-        _snListPromise = null;
-        loadExcelSNList().catch(error => addLog('⚠ Không preload được danh sách SN: ' + error.message));
+        applyLoadedExcel(data, 'điện thoại');
       } else {
         addLog('❌ ' + (data.error || 'Không đọc được file'));
       }
@@ -108,6 +98,87 @@ function setupExcelUpload() {
       addLog('❌ Lỗi: ' + e.message);
     } finally { hideLoading(); updateProgress(); }
   });
+}
+
+function applyLoadedExcel(data, source = 'máy chủ') {
+  state.excelLoaded = true;
+  $('excelStatus').textContent  = `✓ ${data.filename} — ${data.totalValues} SN`;
+  $('excelStatus').className    = 'status-text status-ok';
+  $('snStatus').className       = 'sn-badge sn-loaded';
+  $('snStatusText').textContent = `Excel: ${data.totalValues} SN`;
+  addLog(`✔ Excel (${source}): ${data.filename} — ${data.totalValues} SN (${data.rowCount} dòng)`);
+  if (data.sample?.length) addLog(`📋 Mẫu: ${data.sample.join(', ')}...`);
+  // Preload SN list cho cả desktop/mobile; request được dùng lại khi xuất.
+  allSNList = [];
+  _snListPromise = null;
+  loadExcelSNList().catch(error => addLog('⚠ Không preload được danh sách SN: ' + error.message));
+}
+
+function closeServerExcelPicker() {
+  $('serverExcelModal').classList.add('hidden');
+}
+
+async function openServerExcelPicker() {
+  $('serverExcelModal').classList.remove('hidden');
+  await loadServerExcelFiles();
+}
+
+function formatServerFileSize(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function loadServerExcelFiles() {
+  const list = $('serverExcelList');
+  list.innerHTML = '<div class="folder-loading">Đang tải danh sách Excel...</div>';
+  try {
+    const response = await fetch('/api/excel/server-files');
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Không tải được danh sách Excel');
+    list.innerHTML = '';
+    if (!data.files?.length) {
+      list.innerHTML = '<div class="folder-loading">Chưa có file .xlsx hoặc .xls trên máy chủ.</div>';
+      return;
+    }
+    data.files.forEach(file => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'folder-item';
+      const name = document.createElement('span');
+      name.textContent = `📊 ${file.name}`;
+      const meta = document.createElement('span');
+      meta.className = 'folder-item-meta';
+      meta.textContent = formatServerFileSize(file.size || 0);
+      item.append(name, meta);
+      item.onclick = () => selectServerExcel(file.name);
+      list.appendChild(item);
+    });
+  } catch (error) {
+    list.innerHTML = '';
+    const message = document.createElement('div');
+    message.className = 'folder-error';
+    message.textContent = `❌ ${error.message}`;
+    list.appendChild(message);
+  }
+}
+
+async function selectServerExcel(filename) {
+  showLoading('Đang đọc Excel trên máy chủ...');
+  try {
+    const response = await fetch('/api/excel/load-server', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Không đọc được Excel');
+    applyLoadedExcel(data, 'máy chủ');
+    closeServerExcelPicker();
+  } catch (error) {
+    showNotice('Không đọc được Excel trên máy chủ', error.message);
+  } finally {
+    hideLoading();
+    updateProgress();
+  }
 }
 
 // ── FOLDER BROWSER — Web-based UI (mobile friendly) ────────────

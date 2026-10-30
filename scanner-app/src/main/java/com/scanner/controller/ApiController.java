@@ -9,6 +9,7 @@ import com.scanner.service.WordService;
 import com.scanner.service.StorageService;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -32,6 +33,10 @@ public class ApiController {
     @Autowired private ExcelService excelService;
     @Autowired private WordService wordService;
     @Autowired private StorageService storageService;
+
+    /** Thư mục Excel trên chính máy đang chạy web app (Lenovo khi test, server công ty khi triển khai). */
+    @Value("${scanner.excel.root:C:/ScannerData/Excel}")
+    private String serverExcelRoot;
 
     // Nơi lưu thuộc phiên trình duyệt hiện tại, không dùng chung giữa các máy.
     private String savePath = "";
@@ -274,6 +279,70 @@ public class ApiController {
                 "error", "Không đọc được file Excel: " + e.getMessage()
             ));
         }
+    }
+
+    // ── Excel đã có sẵn trên máy chủ ─────────────────────────────
+    @GetMapping("/excel/server-files")
+    public ResponseEntity<Map<String, Object>> listServerExcelFiles() {
+        try {
+            Path root = serverExcelRoot();
+            List<Map<String, Object>> files;
+            try (var stream = Files.list(root)) {
+                files = stream
+                    .filter(Files::isRegularFile)
+                    .filter(this::isExcelFile)
+                    .sorted(Comparator.comparing(this::modifiedTime).reversed()
+                        .thenComparing(path -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                    .map(path -> Map.<String, Object>of(
+                        "name", path.getFileName().toString(),
+                        "size", fileSize(path),
+                        "modified", modifiedTime(path).toMillis()))
+                    .toList();
+            }
+            return ResponseEntity.ok(Map.of("success", true, "files", files));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("success", false,
+                "error", "Không đọc được thư mục Excel trên máy chủ: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/excel/load-server")
+    public ResponseEntity<Map<String, Object>> loadServerExcel(@RequestBody Map<String, String> body) {
+        try {
+            String filename = body.getOrDefault("filename", "").trim();
+            if (filename.isEmpty()) throw new IllegalArgumentException("Chưa chọn file Excel");
+
+            Path root = serverExcelRoot();
+            Path file = root.resolve(filename).normalize();
+            // Không chấp nhận ../ hoặc đường dẫn do trình duyệt tự gửi lên.
+            if (!file.startsWith(root) || !Files.isRegularFile(file) || !isExcelFile(file)) {
+                throw new IllegalArgumentException("File Excel không hợp lệ hoặc không nằm trong thư mục máy chủ");
+            }
+            return ResponseEntity.ok(excelService.loadExcel(file));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("success", false,
+                "error", "Không đọc được file Excel trên máy chủ: " + e.getMessage()));
+        }
+    }
+
+    private Path serverExcelRoot() throws IOException {
+        Path root = Paths.get(serverExcelRoot).toAbsolutePath().normalize();
+        Files.createDirectories(root);
+        return root;
+    }
+
+    private boolean isExcelFile(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".xlsx") || name.endsWith(".xls");
+    }
+
+    private long fileSize(Path path) {
+        try { return Files.size(path); } catch (IOException ignored) { return 0L; }
+    }
+
+    private java.nio.file.attribute.FileTime modifiedTime(Path path) {
+        try { return Files.getLastModifiedTime(path); }
+        catch (IOException ignored) { return java.nio.file.attribute.FileTime.fromMillis(0); }
     }
 
     // ── Check SN ─────────────────────────────────────────────────

@@ -6,6 +6,9 @@ import org.springframework.web.context.annotation.SessionScope;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 
 @Service
@@ -22,10 +25,23 @@ public class ExcelService {
     }
 
     public Map<String, Object> loadExcel(MultipartFile file) throws IOException {
+        try (InputStream input = file.getInputStream()) {
+            return loadExcel(input, file.getOriginalFilename());
+        }
+    }
+
+    /** Đọc Excel đã có sẵn trong thư mục được cấu hình trên máy chủ. */
+    public Map<String, Object> loadExcel(Path file) throws IOException {
+        try (InputStream input = Files.newInputStream(file)) {
+            return loadExcel(input, file.getFileName().toString());
+        }
+    }
+
+    private Map<String, Object> loadExcel(InputStream input, String filename) throws IOException {
         loadedSerialNumbers = new HashSet<>();
         rowCount = 0;
 
-        try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
+        try (Workbook workbook = WorkbookFactory.create(input)) {
             Sheet sheet = workbook.getSheetAt(0);
             int snColIndex = -1;
             boolean foundHeader = false;
@@ -58,7 +74,7 @@ public class ExcelService {
         result.put("success", true);
         result.put("totalValues", loadedSerialNumbers.size());
         result.put("rowCount", rowCount);
-        result.put("filename", file.getOriginalFilename());
+        result.put("filename", filename);
         // Gửi 5 mẫu về frontend để preview
         result.put("sample", loadedSerialNumbers.stream().limit(5).toList());
         return result;

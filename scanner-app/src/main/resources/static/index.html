@@ -43,11 +43,12 @@
       </div>
       <div class="card-body">
         <div class="setup-row">
-          <label for="excelFile" class="btn btn-blue btn-sm">📂 Tải Excel Serial</label>
+          <button type="button" class="btn btn-blue btn-sm" onclick="openServerExcelPicker()">🗄 Chọn Excel trên Server</button>
+          <label for="excelFile" class="btn btn-outline btn-sm">📱 Tải từ điện thoại</label>
           <input type="file" id="excelFile" accept=".xlsx,.xls" style="display:none"/>
           <span id="excelStatus" class="status-text status-empty">Chưa có dữ liệu</span>
         </div>
-        <p class="hint">Đọc toàn bộ cột — không cần cột cố định</p>
+        <p class="hint">Ưu tiên chọn Excel PO trên máy chủ · Đọc toàn bộ cột, không cần cột cố định</p>
 
         <div class="setup-divider"></div>
         <div class="save-path-row">
@@ -353,6 +354,27 @@
   </div>
 </div>
 
+<!-- ── SERVER EXCEL PICKER ───────────────────────────────────────── -->
+<div id="serverExcelModal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title">🗄 Chọn Excel PO trên máy chủ</span>
+      <button class="modal-close" onclick="closeServerExcelPicker()">✕</button>
+    </div>
+    <div class="modal-path-bar" style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+      <span class="modal-path-text" style="max-width:none;">Chỉ hiển thị file Excel trong thư mục đã cấu hình trên máy chủ</span>
+      <button class="btn btn-outline btn-sm" onclick="loadServerExcelFiles()">↻ Tải lại</button>
+    </div>
+    <div id="serverExcelList" class="folder-list">
+      <div class="folder-loading">Đang tải danh sách Excel...</div>
+    </div>
+    <div class="modal-footer">
+      <div class="selected-path-display">Excel được đọc trên máy chủ; iPhone không cần lưu file.</div>
+      <div class="modal-btns"><button class="btn btn-outline btn-sm" onclick="closeServerExcelPicker()">Đóng</button></div>
+    </div>
+  </div>
+</div>
+
 <!-- ── SN COMPARISON MODAL ──────────────────────────────────────── -->
 <div id="snModal" class="modal-overlay hidden">
   <div class="modal-box modal-sn">
@@ -456,6 +478,6 @@
     <button id="noticeClose" class="btn btn-blue" autofocus>Đóng</button>
   </form>
 </dialog>
-<script src="/js/app.js?v=43"></script>
+<script src="/js/app.js?v=44"></script>
 </body>
 </html>
