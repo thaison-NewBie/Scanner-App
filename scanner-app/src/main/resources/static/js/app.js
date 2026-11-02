@@ -4,6 +4,7 @@ const state = {
   rotations:    { 1: 0,    2: 0,    3: 0,    4: 0    },
   imageFolders: { 3: '',   4: '' },
   lastImageFolder: '',
+  excelFolder:  '',
   excelLoaded:  false,
   savePath:     '',
   // Dùng khi xuất file
@@ -115,32 +116,70 @@ function applyLoadedExcel(data, source = 'máy chủ') {
 }
 
 function closeServerExcelPicker() {
+  _excelBrowseRequest++;
   $('serverExcelModal').classList.add('hidden');
 }
 
 async function openServerExcelPicker() {
   $('serverExcelModal').classList.remove('hidden');
-  await loadServerExcelFiles();
+  $('excelManualPathInput').value = '';
+  $('confirmExcelBtn').disabled = true;
+  $('selectedExcelPathDisplay').textContent = 'Chọn một file .xlsx hoặc .xls bên dưới';
+  _selectedExcelPath = '';
+  await browseServerExcel(state.excelFolder || '');
 }
+
+let _selectedExcelPath = '';
+let _excelBrowseRequest = 0;
 
 function formatServerFileSize(bytes) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-async function loadServerExcelFiles() {
+async function browseServerExcel(path) {
+  const request = ++_excelBrowseRequest;
   const list = $('serverExcelList');
-  list.innerHTML = '<div class="folder-loading">Đang tải danh sách Excel...</div>';
+  list.innerHTML = '<div class="folder-loading">Đang tải thư mục trên máy chủ...</div>';
+  $('confirmExcelBtn').disabled = true;
+  _selectedExcelPath = '';
   try {
-    const response = await fetch('/api/excel/server-files');
+    const response = await fetch('/api/excel/browse?path=' + encodeURIComponent(path));
     const data = await response.json();
     if (!response.ok || !data.success) throw new Error(data.error || 'Không tải được danh sách Excel');
+    if (request !== _excelBrowseRequest) return;
+
+    $('excelModalPathText').textContent = data.current ? ' > ' + data.current : '';
+    state.excelFolder = data.current || '';
     list.innerHTML = '';
-    if (!data.files?.length) {
-      list.innerHTML = '<div class="folder-loading">Chưa có file .xlsx hoặc .xls trên máy chủ.</div>';
-      return;
+
+    if (data.warning) {
+      const warning = document.createElement('div');
+      warning.className = 'folder-empty';
+      warning.textContent = '⚠ ' + data.warning;
+      list.appendChild(warning);
     }
-    data.files.forEach(file => {
+
+    if (data.current && data.parent) {
+      const up = document.createElement('div');
+      up.className = 'folder-item folder-up';
+      up.innerHTML = '<span class="folder-icon" style="margin-right:8px">⬆️</span>.. (Lên một cấp)';
+      up.onclick = () => browseServerExcel(data.parent);
+      list.appendChild(up);
+    }
+
+    data.entries?.forEach(entry => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'folder-item';
+      const name = document.createElement('span');
+      name.textContent = `${entry.type === 'drive' ? '💽' : '📁'} ${entry.name} — Chạm để mở ➔`;
+      item.appendChild(name);
+      item.onclick = () => browseServerExcel(entry.path);
+      list.appendChild(item);
+    });
+
+    (data.files || []).forEach(file => {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'folder-item';
@@ -150,10 +189,26 @@ async function loadServerExcelFiles() {
       meta.className = 'folder-item-meta';
       meta.textContent = formatServerFileSize(file.size || 0);
       item.append(name, meta);
-      item.onclick = () => selectServerExcel(file.name);
+      item.onclick = () => {
+        document.querySelectorAll('#serverExcelList .folder-item').forEach(node => node.classList.remove('selected'));
+        item.classList.add('selected');
+        _selectedExcelPath = file.path;
+        $('selectedExcelPathDisplay').textContent = 'Đã chọn: ' + file.path;
+        $('confirmExcelBtn').disabled = false;
+      };
       list.appendChild(item);
     });
+
+    if (!data.current && !data.entries?.length) {
+      list.innerHTML = '<div class="folder-empty">Không tìm thấy ổ đĩa nào trên máy chủ.</div>';
+    } else if (data.current && !data.entries?.length && !data.files?.length) {
+      const empty = document.createElement('div');
+      empty.className = 'folder-empty';
+      empty.textContent = 'Không có folder hoặc file .xlsx/.xls trong thư mục này.';
+      list.appendChild(empty);
+    }
   } catch (error) {
+    if (request !== _excelBrowseRequest) return;
     list.innerHTML = '';
     const message = document.createElement('div');
     message.className = 'folder-error';
@@ -162,12 +217,13 @@ async function loadServerExcelFiles() {
   }
 }
 
-async function selectServerExcel(filename) {
+async function confirmServerExcel() {
+  if (!_selectedExcelPath) return;
   showLoading('Đang đọc Excel trên máy chủ...');
   try {
-    const response = await fetch('/api/excel/load-server', {
+    const response = await fetch('/api/excel/load-file', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename })
+      body: JSON.stringify({ path: _selectedExcelPath })
     });
     const data = await response.json();
     if (!response.ok || !data.success) throw new Error(data.error || 'Không đọc được Excel');

@@ -9,7 +9,6 @@ import com.scanner.service.WordService;
 import com.scanner.service.StorageService;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -33,10 +32,6 @@ public class ApiController {
     @Autowired private ExcelService excelService;
     @Autowired private WordService wordService;
     @Autowired private StorageService storageService;
-
-    /** Thư mục Excel trên chính máy đang chạy web app (Lenovo khi test, server công ty khi triển khai). */
-    @Value("${scanner.excel.root:C:/ScannerData/Excel}")
-    private String serverExcelRoot;
 
     // Nơi lưu thuộc phiên trình duyệt hiện tại, không dùng chung giữa các máy.
     private String savePath = "";
@@ -281,54 +276,50 @@ public class ApiController {
         }
     }
 
-    // ── Excel đã có sẵn trên máy chủ ─────────────────────────────
-    @GetMapping("/excel/server-files")
-    public ResponseEntity<Map<String, Object>> listServerExcelFiles() {
+    // ── Excel trên máy chủ ───────────────────────────────────────
+    // Điện thoại duyệt ổ đĩa của MÁY CHỦ qua giao diện web, không duyệt ổ đĩa iPhone.
+    @GetMapping("/excel/browse")
+    public ResponseEntity<Map<String, Object>> browseServerExcel(
+            @RequestParam(defaultValue = "") String path) {
         try {
-            Path root = serverExcelRoot();
-            List<Map<String, Object>> files;
-            try (var stream = Files.list(root)) {
-                files = stream
-                    .filter(Files::isRegularFile)
-                    .filter(this::isExcelFile)
-                    .sorted(Comparator.comparing(this::modifiedTime).reversed()
-                        .thenComparing(path -> path.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
-                    .map(path -> Map.<String, Object>of(
-                        "name", path.getFileName().toString(),
-                        "size", fileSize(path),
-                        "modified", modifiedTime(path).toMillis()))
-                    .toList();
+            Map<String, Object> result = new HashMap<>(storageService.browse(path, "reports"));
+            List<Map<String, Object>> files = new ArrayList<>();
+            if (!path.isBlank()) {
+                Path folder = storageService.directory(path, "reports");
+                try (var stream = Files.list(folder)) {
+                    files = stream
+                        .filter(Files::isRegularFile)
+                        .filter(this::isExcelFile)
+                        .sorted(Comparator.comparing(this::modifiedTime).reversed()
+                            .thenComparing(item -> item.getFileName().toString(), String.CASE_INSENSITIVE_ORDER))
+                        .map(item -> Map.<String, Object>of(
+                            "name", item.getFileName().toString(),
+                            "path", item.toString(),
+                            "size", fileSize(item),
+                            "modified", modifiedTime(item).toMillis()))
+                        .toList();
+                }
             }
-            return ResponseEntity.ok(Map.of("success", true, "files", files));
+            result.put("files", files);
+            return ResponseEntity.ok(result);
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("success", false,
-                "error", "Không đọc được thư mục Excel trên máy chủ: " + e.getMessage()));
+                "error", "Không liệt kê được thư mục Excel: " + e.getMessage()));
         }
     }
 
-    @PostMapping("/excel/load-server")
+    @PostMapping("/excel/load-file")
     public ResponseEntity<Map<String, Object>> loadServerExcel(@RequestBody Map<String, String> body) {
         try {
-            String filename = body.getOrDefault("filename", "").trim();
-            if (filename.isEmpty()) throw new IllegalArgumentException("Chưa chọn file Excel");
-
-            Path root = serverExcelRoot();
-            Path file = root.resolve(filename).normalize();
-            // Không chấp nhận ../ hoặc đường dẫn do trình duyệt tự gửi lên.
-            if (!file.startsWith(root) || !Files.isRegularFile(file) || !isExcelFile(file)) {
-                throw new IllegalArgumentException("File Excel không hợp lệ hoặc không nằm trong thư mục máy chủ");
-            }
+            String path = body.getOrDefault("path", "").trim();
+            if (path.isEmpty()) throw new IllegalArgumentException("Chưa chọn file Excel");
+            Path file = storageService.readableFile(path, "reports");
+            if (!isExcelFile(file)) throw new IllegalArgumentException("Chỉ hỗ trợ file .xlsx hoặc .xls");
             return ResponseEntity.ok(excelService.loadExcel(file));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("success", false,
                 "error", "Không đọc được file Excel trên máy chủ: " + e.getMessage()));
         }
-    }
-
-    private Path serverExcelRoot() throws IOException {
-        Path root = Paths.get(serverExcelRoot).toAbsolutePath().normalize();
-        Files.createDirectories(root);
-        return root;
     }
 
     private boolean isExcelFile(Path path) {

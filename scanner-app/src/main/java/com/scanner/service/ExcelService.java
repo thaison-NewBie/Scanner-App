@@ -30,7 +30,7 @@ public class ExcelService {
         }
     }
 
-    /** Đọc Excel đã có sẵn trong thư mục được cấu hình trên máy chủ. */
+    /** Đọc file Excel người dùng đã chọn trên máy chủ qua bộ duyệt thư mục. */
     public Map<String, Object> loadExcel(Path file) throws IOException {
         try (InputStream input = Files.newInputStream(file)) {
             return loadExcel(input, file.getFileName().toString());

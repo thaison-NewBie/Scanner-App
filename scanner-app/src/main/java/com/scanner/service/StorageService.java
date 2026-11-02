@@ -135,6 +135,19 @@ public class StorageService {
         return path;
     }
 
+    /**
+     * Đọc một file đã được chọn từ bộ duyệt thư mục trên web.
+     * Vẫn áp dụng cùng giới hạn đường dẫn như thư mục ảnh/báo cáo,
+     * nên trình duyệt không thể gửi một đường dẫn nằm ngoài phạm vi được phép.
+     */
+    public Path readableFile(String value, String purpose) throws IOException {
+        Path path = checked(value, purpose);
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("File không tồn tại hoặc không truy cập được");
+        }
+        return path;
+    }
+
     public static boolean isImage(Path path) {
         String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return Files.isRegularFile(path) &&
