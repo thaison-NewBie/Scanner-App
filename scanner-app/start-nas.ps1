@@ -1,14 +1,16 @@
 param(
     [int]$Port = 18080,
-    [string]$BindAddress = '127.0.0.1'
+    [string]$BindAddress = '127.0.0.1',
+    [string]$PythonExe = ''
 )
 $ErrorActionPreference = 'Stop'
 $projectDir = $PSScriptRoot
 $jarPath = Join-Path $projectDir 'target-nas\scanner-app-1.0.0.jar'
 if (-not (Test-Path -LiteralPath $jarPath)) { throw 'Build target-nas/scanner-app-1.0.0.jar first. See README-NAS.md.' }
 $javaExe = (Get-Command java -ErrorAction Stop).Source
-$pythonExe = Join-Path $projectDir '.venv\Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $pythonExe)) { throw 'Install the OCR Python environment first. See README-OCR.md.' }
+$pythonExe = if ($PythonExe) { $PythonExe } else { Join-Path $projectDir '.venv\Scripts\python.exe' }
+if (-not (Test-Path -LiteralPath $pythonExe)) { throw "OCR Python not found: $pythonExe. See README-OCR.md or pass -PythonExe." }
+$pythonExe = (Resolve-Path -LiteralPath $pythonExe).Path
 $env:SCANNER_PYTHON = $pythonExe
 $portCheck = [Net.Sockets.TcpClient]::new()
 try {

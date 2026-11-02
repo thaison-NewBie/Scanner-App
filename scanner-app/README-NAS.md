@@ -28,7 +28,7 @@ Chỉ khởi động sau khi build thành công:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-nas.ps1
 ```
 
-Script dùng `target-nas/scanner-app-1.0.0.jar`, đặt `SCANNER_PYTHON` tới `.venv/Scripts/python.exe`, chạy nền và ghi log tại thư mục project. Máy phát triển này có Maven tại `D:\WebApp\workspace\maven\apache-maven-3.9.9\bin\mvn.cmd` nếu chưa có `mvn` trên PATH.
+Script dùng `target-nas/scanner-app-1.0.0.jar`, đặt `SCANNER_PYTHON` tới `.venv/Scripts/python.exe` (hoặc đường dẫn truyền qua `-PythonExe` khi dùng lại venv của bản cài cũ), chạy nền và ghi log tại thư mục project. Mặc định chỉ nghe `127.0.0.1`; thêm `-BindAddress 0.0.0.0` khi cần điện thoại truy cập. Máy phát triển này có Maven tại `D:\WebApp\workspace\maven\apache-maven-3.9.9\bin\mvn.cmd` nếu chưa có `mvn` trên PATH.
 
 Mở `http://localhost:18080/`. Dừng đúng tiến trình do script tạo bằng:
 
