@@ -74,7 +74,7 @@ Nếu Ubuntu có giao diện trình duyệt, mở **http://127.0.0.1:18080/** ng
 
 ## 5. Thử luồng tạo Word
 
-Khi mở được app, tải Excel PO mẫu từ thiết bị đang mở trình duyệt. Với iPhone, Excel cần có trong Files hoặc một vị trí mà bộ chọn file của iPhone truy cập được; container không tự đọc ổ đĩa laptop.
+Khi mở được app, có hai cách nạp Excel PO: bấm **Chọn file Excel** để duyệt ổ đĩa bên trong container, hoặc **Tải từ điện thoại** từ thiết bị đang mở trình duyệt. Cấu hình Compose giới hạn quyền duyệt trong các thư mục đã mount, nên file Excel phải nằm trong `/data/reports` (hoặc đổi cấu hình mount/`reports-unrestricted`). Container không tự đọc ổ đĩa laptop.
 
 Trong bộ chọn thư mục của web, chọn:
 

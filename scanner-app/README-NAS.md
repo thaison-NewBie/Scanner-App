@@ -11,7 +11,7 @@ Profile `nas` hiện dùng cổng **18080**, chỉ lắng nghe **127.0.0.1**. T�
 - Excel và nơi lưu thuộc từng phiên trình duyệt. Tải lại trang bắt đầu phiên làm việc trống.
 - Ô 1/2 nhớ chung thư mục chọn ảnh trong phiên, gợi ý tên ảnh tồn tại kế tiếp. Ô 3/4 nhớ chung vị trí thư mục riêng.
 - Truy cập bằng `localhost` trên Windows dùng hộp thoại Windows; truy cập từ điện thoại dùng hộp thoại duyệt thư mục trong web.
-- Điện thoại tải Excel từ ứng dụng Tệp. Chưa có chức năng chọn trực tiếp Excel trên laptop qua web.
+- Excel PO chọn trực tiếp trên ổ đĩa của máy chủ qua hộp thoại duyệt trong web (duyệt ổ/thư mục, dán được đường dẫn UNC); vẫn có nút tải Excel từ điện thoại. Khi `restricted=true`, chỉ duyệt được trong thư mục báo cáo đã cấu hình.
 - Chụp qua web chưa tự lưu ảnh vào Photos của iPhone. Khi cần bản gốc dự phòng, chụp bằng Camera rồi chọn từ thư viện.
 
 ## Chuẩn bị và khởi động
