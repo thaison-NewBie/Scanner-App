@@ -38,7 +38,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-nas.ps1
 
 ## Kết nối điện thoại và NAS
 
-Cấu hình mặc định trên chỉ dùng tại máy chạy app. Để điện thoại truy cập cần cấu hình địa chỉ lắng nghe LAN, quy tắc firewall giới hạn mạng/thiết bị thử, và lấy IP hiện tại của máy chạy. IP của NAS không phải IP của app.
+Cấu hình mặc định chỉ lắng nghe `127.0.0.1`. Để điện thoại cùng Wi-Fi truy cập, chạy app với `-BindAddress 0.0.0.0`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start-nas.ps1 -BindAddress 0.0.0.0
+```
+
+Lần đầu mở LAN cần thêm rule firewall (PowerShell Run as Administrator), giới hạn trong dải mạng nội bộ:
+
+```powershell
+New-NetFirewallRule -DisplayName "Scanner App 18080" -Direction Inbound -Protocol TCP -LocalPort 18080 -Action Allow -Profile Private,Public -RemoteAddress 192.168.1.0/24
+```
+
+Lấy IP của máy chạy bằng `ipconfig`, rồi mở `http://<IP>:18080/` trên điện thoại. IP của NAS không phải IP của app.
 
 NAS được truy cập bằng tài khoản chạy backend. Tài khoản đó phải đọc được thư mục ảnh và có quyền ghi ở nơi lưu báo cáo; không gửi mật khẩu NAS xuống điện thoại. Dùng đường dẫn UNC đầy đủ trên Windows. Trên Linux cần mount share SMB rồi dùng đường dẫn mount.
 
