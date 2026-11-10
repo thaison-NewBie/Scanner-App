@@ -403,7 +403,9 @@ def sticker_crops(pil_img: Image.Image, max_crops: int = 3):
             continue
         crop = pil_img.crop((left, top, left + cw, top + ch))
         cw2, ch2 = crop.size
-        scale = min(1100.0 / max(1, min(cw2, ch2)), 1200.0 / max(cw2, ch2))
+        scale = min(1100.0 / max(1, min(cw2, ch2)), 1000.0 / max(cw2, ch2))
+        if scale < 1.0:
+            scale = 1.0
         if scale > 1.02:
             crop = crop.resize((int(cw2 * scale), int(ch2 * scale)), Image.LANCZOS)
         crops.append(crop)
@@ -488,6 +490,8 @@ def scan_image(pil_original: Image.Image, known_serials=None, deadline_seconds: 
             return outcome
         all_serials.extend(qr + serials)
         text_read = text_read or bool(serials)
+        if serials:
+            break   # vùng này đọc được chữ rồi; không quét thêm vùng khác
 
     # Đọc được chữ nhưng không khớp Excel → trả gợi ý, KHÔNG quét sâu.
     if text_read:
@@ -566,7 +570,8 @@ def main():
 def exact_matches(candidates, known_serials):
     """Chỉ xác nhận chuỗi khớp nguyên vẹn; chuỗi gần giống cần người dùng chọn.
     Khớp thêm qua bảng ký tự dễ nhầm (O/0, I/1, B/8, S/5, Z/2, G/6) khi đã có
-    Excel: chuỗi chuẩn hoá trùng đúng một dòng Excel thì tính là khớp chính xác."""
+    Excel. So sánh trên chuỗi đã bỏ ký tự thừa nên Excel ghi '(S)DH...' hay
+    'DH 2419...' vẫn khớp với chuỗi đọc được từ tem."""
     known = set(known_serials or ())
     direct = [candidate for candidate in candidates if candidate in known]
     if direct:
@@ -576,17 +581,22 @@ def exact_matches(candidates, known_serials):
     canonical_index = {}
     ambiguous = set()
     for serial in known:
-        key = canonical(serial)
+        key = canonical(clean_key(serial))
         if key in canonical_index:
             ambiguous.add(key)
         else:
             canonical_index[key] = serial
     result = []
     for candidate in candidates:
-        key = canonical(candidate)
+        key = canonical(clean_key(candidate))
         if key in canonical_index and key not in ambiguous:
             result.append(canonical_index[key])
     return deduplicate(result)
+
+
+def clean_key(value: str) -> str:
+    """Bỏ mọi ký tự không phải chữ/số: Excel có thể ghi '(S)DH...' hay 'DH 2419...'."""
+    return re.sub(r'[^A-Z0-9]', '', str(value or '').upper())
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -610,30 +620,50 @@ def guess_serials(candidates, known_serials):
     - Đọc được 1 nửa tem → khớp dòng Excel CHỨA chuỗi đó (substring).
     - Chuỗi dính chữ xung quanh (XX...YY) → vẫn khớp dòng Excel bên trong.
     - Sai 1-2 ký tự → khớp dòng Excel gần nhất theo Levenshtein.
+    So sánh trên chuỗi đã bỏ ký tự thừa (Excel ghi '(S)DH...' vẫn khớp).
     Chỉ đoán khi DUY NHẤT một dòng Excel thoả mãn; mơ hồ thì trả [] để
     người dùng tự chọn, không bao giờ đoán bừa."""
     known = set(known_serials or ())
     if not known or not candidates:
         return []
+    clean_pairs = []
+    ambiguous_keys = set()
+    seen_keys = set()
+    for serial in known:
+        key = clean_key(serial)
+        if not key:
+            continue
+        if key in seen_keys:
+            ambiguous_keys.add(key)
+        else:
+            seen_keys.add(key)
+        clean_pairs.append((key, serial))
     guessed = []
     for candidate in candidates:
-        if len(candidate) < 6:
+        ck = clean_key(candidate)
+        if len(ck) < 6:
             continue
         # 1) Chuỗi con: nửa tem hoặc chuỗi dính nhiễu hai đầu.
-        subs = [s for s in known
-                if candidate in s or (len(candidate) >= 8 and s in candidate)]
+        subs = set()
+        for key, serial in clean_pairs:
+            if key in ambiguous_keys:
+                continue
+            if ck in key or (len(ck) >= 8 and key in ck):
+                subs.add(serial)
         if len(subs) == 1:
-            guessed.append(subs[0])
+            guessed.append(subs.pop())
             continue
         if len(subs) > 1:
             continue
         # 2) Sai chính tả vài ký tự (Levenshtein).
-        limit = max(2, len(candidate) // 6)
+        limit = max(2, len(ck) // 6)
         best, best_distance, tied = None, 10 ** 9, False
-        for serial in known:
-            if abs(len(serial) - len(candidate)) > limit:
+        for key, serial in clean_pairs:
+            if key in ambiguous_keys:
                 continue
-            distance = levenshtein(candidate, serial)
+            if abs(len(key) - len(ck)) > limit:
+                continue
+            distance = levenshtein(ck, key)
             if distance < best_distance:
                 best, best_distance, tied = serial, distance, False
             elif distance == best_distance:

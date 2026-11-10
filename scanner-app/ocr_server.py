@@ -9,10 +9,12 @@ GET  /health -> {"ok": true, "backend": "rapid", "error": null}
 """
 import argparse
 import base64
+import hashlib
 import io
 import json
 import sys
 import threading
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -26,6 +28,17 @@ _ENGINE_READY = threading.Event()   # bật khi nạp model xong (thành công h
 _LOAD_THREAD = None
 _LOAD_LOCK = threading.Lock()
 _INIT_ERRORS = []
+
+# Kết quả của ảnh vừa quét được giữ lại: người dùng quét lại cùng ảnh
+# (rất hay xảy ra khi chưa khớp Excel) sẽ nhận kết quả ngay lập tức.
+_CACHE = OrderedDict()
+_CACHE_MAX = 32
+_CACHE_LOCK = threading.Lock()
+
+
+def _cache_key(image_bytes: bytes, serials) -> str:
+    payload = image_bytes + b'|' + ','.join(sorted(serials)).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
 
 
 def start_engine_load() -> threading.Thread:
@@ -87,6 +100,14 @@ class Handler(BaseHTTPRequestHandler):
             image_bytes = base64.b64decode(request['image'])
             serials = {str(s).strip().upper() for s in request.get('serials', []) if str(s).strip()}
 
+            key = _cache_key(image_bytes, serials)
+            with _CACHE_LOCK:
+                cached = _CACHE.get(key)
+                if cached is not None:
+                    _CACHE.move_to_end(key)
+                    self._reply(200, cached)
+                    return
+
             # Chờ model nạp xong (tối đa 180s) rồi mới quét.
             start_engine_load()
             if not _ENGINE_READY.wait(timeout=180) or ocr.OCR_BACKEND is None:
@@ -107,6 +128,12 @@ class Handler(BaseHTTPRequestHandler):
                     pil_img.thumbnail((ocr.MAX_DIM, ocr.MAX_DIM), ocr.Image.LANCZOS)
 
                 output = ocr.scan_image(pil_img, serials)
+            if output.get('error') is None:
+                with _CACHE_LOCK:
+                    _CACHE[key] = output
+                    _CACHE.move_to_end(key)
+                    while len(_CACHE) > _CACHE_MAX:
+                        _CACHE.popitem(last=False)
             self._reply(200, output)
         except Exception as exc:
             self._reply(500, {"candidates": [], "method": "none", "error": str(exc)})

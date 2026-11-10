@@ -1477,9 +1477,11 @@ function compressImageForWord(file, maxDimension = 1400, quality = 0.82) {
 }
 
 async function prepareOcrImage(file) {
-  if (!file || !file.size || file.size <= 1500 * 1024) return file;
+  // Giữ ảnh gốc càng nhiều càng tốt: tem SN nhỏ nên nén trình duyệt làm mất
+  // nét chữ. Chỉ nén khi ảnh > 2.5MB, và nén nhẹ (2000px, chất lượng 90%).
+  if (!file || !file.size || file.size <= 2500 * 1024) return file;
   try {
-    const compact = await compressImageForWord(file, 1600, 0.86);
+    const compact = await compressImageForWord(file, 2000, 0.90);
     if (compact && compact.size < file.size) {
       addLog(`📡 Ảnh OCR: ${Math.round(file.size / 1024)}KB → ${Math.round(compact.size / 1024)}KB`);
       return compact;

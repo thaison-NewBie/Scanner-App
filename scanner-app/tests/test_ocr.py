@@ -66,6 +66,13 @@ class ScanTests(unittest.TestCase):
         # Hai dòng Excel cùng chứa chuỗi đọc được → không đoán bừa.
         self.assertEqual(ocr.guess_serials(['AB1234'], {'AB12345678', 'AB12345679'}), [])
 
+    def test_excel_with_label_prefix_still_matches(self):
+        # Excel hay ghi '(S)DH...' hoặc 'DH 2419...'; chuỗi đọc từ tem vẫn khớp.
+        self.assertEqual(ocr.exact_matches(['DH241931735'], {'DH 2419 31735'}), ['DH 2419 31735'])
+        # Tiền tố '(S)' làm clean-key thành 'SDH...' → khớp qua đoán substring.
+        self.assertEqual(ocr.guess_serials(['DH241931735'], {'(S)DH241931735'}), ['(S)DH241931735'])
+        self.assertEqual(ocr.guess_serials(['DH2419'], {'(S)DH241931735'}), ['(S)DH241931735'])
+
     def test_scan_image_returns_suggestions_without_deep_scan(self):
         # Đọc được chữ nhưng không khớp Excel → trả gợi ý ngay, KHÔNG quét sâu.
         pil_img = Image.new('RGB', (120, 120), 'white')
