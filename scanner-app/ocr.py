@@ -186,7 +186,11 @@ def run_ocr_on_pil(pil_img: Image.Image, det_limit=None) -> list:
             result = ocr_engine.ocr(img_np, cls=True)
             lines = [(line[1][0], float(line[1][1])) for line in ((result or [None])[0] or [])]
     # Engine đã lọc theo text_score (0.35); chỉ bỏ các dòng gần như chắc chắn sai.
-    return sorted((item for item in lines if item[1] > 0.30), key=lambda item: -item[1])
+    lines = sorted((item for item in lines if item[1] > 0.30), key=lambda item: -item[1])
+    if os.environ.get('SCANNER_OCR_DEBUG') == '1':
+        for text, score in lines:
+            print(f'[OCR-DEBUG] {score:.2f} {text}', file=sys.stderr)
+    return lines
 
 
 def looks_like_serial(value: str, known_serials=None) -> bool:
@@ -282,8 +286,8 @@ def build_image_variants(pil_img: Image.Image):
 
     yield 'enhanced', enhance_for_ocr(pil_img)
 
-    # Phóng to vừa phải cho tem SN nhỏ, tránh tạo ảnh 3600–4800 px quá chậm.
-    scale = min(1.5, 2400 / max(w, h))
+    # Phóng to cho tem SN nhỏ (cả ảnh dọc) để rec đọc được chữ bé.
+    scale = min(2.0, 2800 / max(w, h))
     if scale > 1.02:
         yield 'zoom', pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
@@ -291,6 +295,12 @@ def build_image_variants(pil_img: Image.Image):
     if HAS_CV2:
         clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
         yield 'clahe', Image.fromarray(clahe.apply(gray_np)).convert('RGB')
+        # Nhị phân hoá thích ứng + giãn nhẹ: giúp tem nhòe/rách/nền loang lổ.
+        gray_bgr = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2GRAY)
+        binary = cv2.adaptiveThreshold(gray_bgr, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
+        binary = cv2.dilate(binary, np.ones((2, 2), np.uint8), iterations=1)
+        yield 'bw_adapt', Image.fromarray(binary).convert('RGB')
     else:
         # Fallback nhẹ khi máy không có OpenCV.
         gray = Image.fromarray(gray_np)
@@ -308,56 +318,83 @@ def build_image_variants(pil_img: Image.Image):
 
 def scan_image(pil_original: Image.Image, known_serials=None, deadline_seconds: float = DEADLINE_SECONDS):
     """
-    Trả dict {candidates, method, error}. Không in ra stdout.
-    Thứ tự: barcode (cả ảnh + vùng giữa) → OCR vùng giữa → biến thể vùng giữa
-    → OCR cả ảnh (fallback khi tem SN không nằm giữa) → biến thể cả ảnh.
+    Trả dict {candidates, method, error, elapsed_ms}. Không in ra stdout.
+
+    Hai tầng để bỏ cảnh chờ 50s:
+    1) Lượt nhanh (vùng giữa, det 736): khớp Excel → dừng; đọc được chữ nhưng
+       chưa khớp → TRẢ GỢI Ý NGAY cho người dùng chọn (không quét sâu).
+    2) Quét sâu (biến thể + cả ảnh) chỉ chạy khi lượt nhanh không đọc được gì.
+    Khớp với Excel qua exact + bảng ký tự nhầm lẫn + đoán chuỗi thiếu/lỗi
+    (substring/Levenshtein), chỉ khi đoán DUY NHẤT một dòng Excel.
     """
+    start = time.monotonic()
     known_serials = {str(s).strip().upper() for s in (known_serials or ()) if str(s).strip()}
-    deadline = time.monotonic() + deadline_seconds
+    deadline = start + deadline_seconds
 
     # ── GIAI ĐOẠN 1: Barcode (nhanh, chính xác nhất) ────────────────────
     center = crop_serial_center(pil_original)
     barcode_results = deduplicate(scan_barcode(pil_original) + scan_barcode(center))
     matched = exact_matches(barcode_results, known_serials)
     if matched or (barcode_results and not known_serials):
-        return {"candidates": matched or barcode_results, "method": "barcode", "error": None}
+        return result(matched or barcode_results, "barcode", start)
 
     if OCR_BACKEND is None:
         try:
             initialize_ocr()
         except Exception as exc:
             if barcode_results:
-                return {"candidates": barcode_results, "method": "barcode", "error": None}
-            return {"candidates": [], "method": "none", "error": str(exc)}
+                return result(barcode_results, "barcode", start)
+            return {"candidates": [], "method": "none", "error": str(exc),
+                    "elapsed_ms": int((time.monotonic() - start) * 1000)}
 
-    # ── GIAI ĐOẠN 2: OCR theo thứ tự vùng/biến thể ───────────────────────
     all_serials = list(barcode_results)
 
-    def passes():
-        # Lượt đầu chạy nhanh (det 736) để ảnh rõ khớp trong ~1-2s.
-        yield 'center', center, FAST_DET_LIMIT
-        # Quét sâu chỉ chạy khi lượt đầu chưa khớp Excel.
-        for name, img in build_image_variants(center):
-            yield name, img, DEEP_DET_LIMIT
-        # Fallback: tem SN có thể không nằm ở giữa (ảnh rõ nhưng crop cứng
-        # cắt mất dòng SN) → quét cả ảnh gốc và một biến thể nâng tương phản.
-        yield 'full', pil_original, DEEP_DET_LIMIT
-        yield 'full_enhanced', enhance_for_ocr(pil_original), DEEP_DET_LIMIT
+    # ── LƯỢT NHANH: vùng giữa, det 736 ─────────────────────────────────
+    raw = run_ocr_on_pil(center, FAST_DET_LIMIT)
+    serials = extract_serials(raw, known_serials)
+    matched = exact_matches(serials, known_serials)
+    if matched:
+        return result(matched, "ocr_center_exact", start)
+    guessed = guess_serials(serials, known_serials)
+    if guessed:
+        return result(guessed, "ocr_center_guess", start)
+    all_serials.extend(serials)
+    # Đọc được chữ nhưng không khớp Excel → trả gợi ý để người dùng chọn,
+    # KHÔNG quét sâu (đây là nguyên nhân trước đây mỗi lần quét mất 50s+).
+    if serials:
+        return result(deduplicate(all_serials), "ocr_center_suggestions", start)
 
-    for name, img, det_limit in passes():
+    # ── QUÉT SÂU: chỉ khi lượt nhanh không đọc được gì ──────────────────
+    for name, img, det_limit in deep_passes(center, pil_original):
         if time.monotonic() >= deadline:
             break
         raw = run_ocr_on_pil(img, det_limit)
         serials = extract_serials(raw, known_serials)
         matched = exact_matches(serials, known_serials)
         if matched:
-            # Chỉ thoát sớm khi khớp Excel, tránh dừng ở mã model/nhiễu.
-            return {"candidates": matched, "method": f"ocr_{name}_exact", "error": None}
+            return result(matched, f"ocr_{name}_exact", start)
+        guessed = guess_serials(serials, known_serials)
+        if guessed:
+            return result(guessed, f"ocr_{name}_guess", start)
         all_serials.extend(serials)
+        if serials:
+            break  # có chữ rồi → trả gợi ý, không quét tiếp
 
-    return {"candidates": deduplicate(all_serials),
-            "method": 'ocr_deep' if all_serials else 'ocr_no_result',
-            "error": None}
+    return result(deduplicate(all_serials), 'ocr_deep' if all_serials else 'ocr_no_result', start)
+
+
+def result(candidates, method, start):
+    return {"candidates": deduplicate(candidates), "method": method,
+            "error": None, "elapsed_ms": int((time.monotonic() - start) * 1000)}
+
+
+def deep_passes(center, pil_original):
+    for name, img in build_image_variants(center):
+        yield name, img, DEEP_DET_LIMIT
+    # Fallback: tem SN có thể không nằm ở giữa (ảnh rõ nhưng crop cứng
+    # cắt mất dòng SN) → quét cả ảnh gốc và một biến thể nâng tương phản.
+    yield 'full', pil_original, DEEP_DET_LIMIT
+    yield 'full_enhanced', enhance_for_ocr(pil_original), DEEP_DET_LIMIT
 
 
 # ── MAIN (CLI) ────────────────────────────────────────────────────────────────
@@ -422,6 +459,60 @@ def exact_matches(candidates, known_serials):
         if key in canonical_index and key not in ambiguous:
             result.append(canonical_index[key])
     return deduplicate(result)
+
+
+def levenshtein(a: str, b: str) -> int:
+    """Khoảng cách sửa chuỗi (số ký tự sai tối thiểu)."""
+    if a == b:
+        return 0
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, 1):
+        current = [i]
+        for j, char_b in enumerate(b, 1):
+            current.append(min(
+                previous[j] + 1,           # xoá
+                current[j - 1] + 1,        # thêm
+                previous[j - 1] + (0 if char_a == char_b else 1)))  # thay
+        previous = current
+    return previous[-1]
+
+
+def guess_serials(candidates, known_serials):
+    """Đoán SN đầy đủ từ chuỗi đọc thiếu/nhòe bằng cách đối chiếu Excel:
+    - Đọc được 1 nửa tem → khớp dòng Excel CHỨA chuỗi đó (substring).
+    - Chuỗi dính chữ xung quanh (XX...YY) → vẫn khớp dòng Excel bên trong.
+    - Sai 1-2 ký tự → khớp dòng Excel gần nhất theo Levenshtein.
+    Chỉ đoán khi DUY NHẤT một dòng Excel thoả mãn; mơ hồ thì trả [] để
+    người dùng tự chọn, không bao giờ đoán bừa."""
+    known = set(known_serials or ())
+    if not known or not candidates:
+        return []
+    guessed = []
+    for candidate in candidates:
+        if len(candidate) < 6:
+            continue
+        # 1) Chuỗi con: nửa tem hoặc chuỗi dính nhiễu hai đầu.
+        subs = [s for s in known
+                if candidate in s or (len(candidate) >= 8 and s in candidate)]
+        if len(subs) == 1:
+            guessed.append(subs[0])
+            continue
+        if len(subs) > 1:
+            continue
+        # 2) Sai chính tả vài ký tự (Levenshtein).
+        limit = max(2, len(candidate) // 6)
+        best, best_distance, tied = None, 10 ** 9, False
+        for serial in known:
+            if abs(len(serial) - len(candidate)) > limit:
+                continue
+            distance = levenshtein(candidate, serial)
+            if distance < best_distance:
+                best, best_distance, tied = serial, distance, False
+            elif distance == best_distance:
+                tied = True
+        if best is not None and not tied and best_distance <= limit:
+            guessed.append(best)
+    return deduplicate(guessed)
 
 
 def deduplicate(lst: list) -> list:

@@ -17,13 +17,19 @@ thay vì spawn `ocr.py` từng lần:
 Chiến lược hai tầng trong `ocr.py`:
 
 - Lượt quét đầu (vùng giữa ảnh slot 2) dùng det **736** để ảnh rõ khớp nhanh.
-- Chỉ khi chưa khớp Excel mới quét sâu với det **960** (chỉnh qua biến môi
-  trường `SCANNER_OCR_DET_LIMIT`; 1280 nhận diện chữ nhỏ tốt hơn nhưng mỗi
-  lượt quét chậm hơn đáng kể trên CPU yếu), gồm các biến thể nâng tương
-  phản/phóng to/xoay và fallback quét cả ảnh khi tem SN không nằm giữa.
-- Khi có Excel, ký tự dễ đọc nhầm (O/0, I/1, B/8, S/5, Z/2, G/6) được chuẩn
-  hoá trước khi so khớp nên đọc nhầm 1-2 ký tự vẫn tự xác nhận, không phải
-  quét lại.
+- Đọc được chữ nhưng chưa khớp Excel → **trả gợi ý ngay**, không quét sâu
+  (quét sâu là nguyên nhân trước đây mỗi lần quét mất 50s+).
+- Quét sâu (det **960**, chỉnh qua `SCANNER_OCR_DET_LIMIT`) chỉ chạy khi lượt
+  đầu không đọc được gì, gồm phóng to 2x, CLAHE, nhị phân hoá thích ứng
+  (tem nhòe/rách), xoay 90/270 và fallback quét cả ảnh khi tem lệch giữa.
+- **Đoán SN từ Excel** khi tem thiếu nửa/nhòe: chuỗi đọc được chỉ cần là
+  chuỗi con (hoặc sai 1-2 ký tự theo Levenshtein, hoặc nhầm O/0, I/1, B/8,
+  S/5, Z/2, G/6) của **đúng một** dòng Excel thì tự xác nhận; mơ hồ thì để
+  người dùng chọn, không đoán bừa.
+
+Chẩn đoán: Java ghi `[OCR] via=... method=... ms=...` vào log app; chạy
+`$env:SCANNER_OCR_DEBUG='1'` trước `python ocr.py ảnh serials.json` sẽ in
+từng dòng đọc được kèm điểm tin cậy ra stderr để chỉnh ngưỡng/lọc.
 
 ## Cài đặt
 

@@ -22,16 +22,29 @@ import ocr  # noqa: E402
 # RapidOCR không an toàn đa luồng; xử lý tuần tự nhưng vẫn nhận song song
 # nhiều kết nối (điện thoại khác nhau cùng lúc sẽ xếp hàng).
 _ENGINE_LOCK = threading.Lock()
+_ENGINE_READY = threading.Event()   # bật khi nạp model xong (thành công hoặc lỗi)
+_LOAD_THREAD = None
+_LOAD_LOCK = threading.Lock()
 _INIT_ERRORS = []
 
 
-def ensure_engine() -> bool:
-    if ocr.OCR_BACKEND is None:
-        try:
-            ocr.initialize_ocr()
-        except Exception as exc:
-            _INIT_ERRORS.append(str(exc))
-    return ocr.OCR_BACKEND is not None
+def start_engine_load() -> threading.Thread:
+    """Nạp model nền MỘT lần; /health trả lời ngay để Java biết đang tải."""
+    global _LOAD_THREAD
+    with _LOAD_LOCK:
+        if _LOAD_THREAD is None or not _LOAD_THREAD.is_alive():
+            _LOAD_THREAD = threading.Thread(target=_load_engine, daemon=True)
+            _LOAD_THREAD.start()
+    return _LOAD_THREAD
+
+
+def _load_engine():
+    try:
+        ocr.initialize_ocr()
+    except Exception as exc:
+        _INIT_ERRORS.append(str(exc))
+    finally:
+        _ENGINE_READY.set()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -48,7 +61,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/health':
-            ready = ensure_engine()
+            if not _ENGINE_READY.is_set():
+                start_engine_load()
+                self._reply(503, {"ok": False, "loading": True, "error": None})
+                return
+            ready = ocr.OCR_BACKEND is not None
             self._reply(200 if ready else 500, {
                 "ok": ready,
                 "backend": ocr.OCR_BACKEND,
@@ -70,12 +87,14 @@ class Handler(BaseHTTPRequestHandler):
             image_bytes = base64.b64decode(request['image'])
             serials = {str(s).strip().upper() for s in request.get('serials', []) if str(s).strip()}
 
-            with _ENGINE_LOCK:
-                if not ensure_engine():
-                    error = _INIT_ERRORS[-1] if _INIT_ERRORS else 'OCR engine không khởi tạo được'
-                    self._reply(500, {"candidates": [], "method": "none", "error": error})
-                    return
+            # Chờ model nạp xong (tối đa 180s) rồi mới quét.
+            start_engine_load()
+            if not _ENGINE_READY.wait(timeout=180) or ocr.OCR_BACKEND is None:
+                error = _INIT_ERRORS[-1] if _INIT_ERRORS else 'OCR engine load timeout'
+                self._reply(500, {"candidates": [], "method": "none", "error": error})
+                return
 
+            with _ENGINE_LOCK:
                 pil_img = ocr.Image.open(io.BytesIO(image_bytes))
                 pil_img = ocr.ImageOps.exif_transpose(pil_img)
                 if pil_img.mode not in ('RGB', 'RGBA'):
@@ -99,8 +118,8 @@ def main():
     parser.add_argument('--host', default='127.0.0.1')
     args = parser.parse_args()
 
-    # Nạp model trước khi nhận request để lần quét đầu tiên đã nhanh.
-    ensure_engine()
+    # Nạp model nền trước khi nhận request để lần quét đầu tiên đã nhanh.
+    start_engine_load()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True

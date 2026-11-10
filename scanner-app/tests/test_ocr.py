@@ -48,7 +48,35 @@ class ScanTests(unittest.TestCase):
         names = [name for name, _ in variants]
         self.assertEqual(names[:2], ['enhanced', 'zoom'])
         self.assertEqual(names[-2:], ['rotate90', 'rotate270'])
-        self.assertEqual(variants[1][1].size, (120, 210))
+        self.assertEqual(variants[1][1].size, (160, 280))
+
+    def test_guess_serials_from_partial_string(self):
+        # Đọc được nửa tem → khớp đúng dòng Excel chứa nó.
+        self.assertEqual(ocr.guess_serials(['AB1234'], {'AB12345678', 'CD999999'}), ['AB12345678'])
+
+    def test_guess_serials_from_wrapped_noise(self):
+        # Chuỗi dính chữ hai đầu vẫn khớp dòng Excel bên trong.
+        self.assertEqual(ocr.guess_serials(['XXAB12345678YY'], {'AB12345678'}), ['AB12345678'])
+
+    def test_guess_serials_from_typo(self):
+        # Sai 1 ký tự (G đọc nhầm từ 8) → đoán đúng dòng Excel.
+        self.assertEqual(ocr.guess_serials(['AB1234567G'], {'AB12345678'}), ['AB12345678'])
+
+    def test_guess_not_returned_when_ambiguous(self):
+        # Hai dòng Excel cùng chứa chuỗi đọc được → không đoán bừa.
+        self.assertEqual(ocr.guess_serials(['AB1234'], {'AB12345678', 'AB12345679'}), [])
+
+    def test_scan_image_returns_suggestions_without_deep_scan(self):
+        # Đọc được chữ nhưng không khớp Excel → trả gợi ý ngay, KHÔNG quét sâu.
+        pil_img = Image.new('RGB', (120, 120), 'white')
+        with patch.object(ocr, 'OCR_BACKEND', 'rapid'), \
+             patch.object(ocr, 'scan_barcode', return_value=[]), \
+             patch.object(ocr, 'run_ocr_on_pil', return_value=[('AB12345678', 0.9)]), \
+             patch.object(ocr, 'build_image_variants') as variants:
+            output = ocr.scan_image(pil_img, {'ZZ999999'})
+        self.assertEqual(output['method'], 'ocr_center_suggestions')
+        self.assertEqual(output['candidates'], ['AB12345678'])
+        variants.assert_not_called()
 
     def test_exact_match_before_substring(self):
         self.assertEqual(ocr.exact_matches(['AB12345678'], {'AB12345678', '12345678'}), ['AB12345678'])

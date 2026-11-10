@@ -35,7 +35,7 @@ public class OcrService {
         .connectTimeout(Duration.ofSeconds(3))
         .build();
 
-    private static final long SERVER_READY_TIMEOUT_MS = 45_000;
+    private static final long SERVER_READY_TIMEOUT_MS = 120_000;
     private static final long SERVER_CALL_TIMEOUT_MS = 45_000;
     private static final long CLI_TIMEOUT_MS = 60_000;
 
@@ -59,11 +59,19 @@ public class OcrService {
         this.ocrScript = userDir.resolve("ocr.py");
         this.ocrServerScript = userDir.resolve("ocr_server.py");
         this.ocrServerLog = userDir.resolve("ocr-server.log");
+    }
+
+    /**
+     * Nạp sẵn model ngay khi app khởi động xong (chạy nền) để lần quét đầu
+     * tiên không phải chờ nạp model. Không chặn khởi động của Spring.
+     */
+    @org.springframework.context.event.EventListener(
+        org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    public void prewarm() {
         if (serverEnabled && Files.exists(ocrServerScript)) {
-            // Prewarm: nạp sẵn model ở nền để lần quét đầu tiên cũng nhanh.
-            Thread prewarm = new Thread(this::ensureServerReady, "ocr-server-prewarm");
-            prewarm.setDaemon(true);
-            prewarm.start();
+            Thread thread = new Thread(this::ensureServerReady, "ocr-server-prewarm");
+            thread.setDaemon(true);
+            thread.start();
         }
     }
 
@@ -85,12 +93,24 @@ public class OcrService {
         if (serverEnabled && Files.exists(ocrServerScript)) {
             try {
                 Map<String, Object> result = ocrViaServer(imageBytes, knownSerials, true);
-                if (result != null) return result;
+                if (result != null) {
+                    logResult(result, "daemon");
+                    return result;
+                }
             } catch (Exception ignored) {
                 // rơi xuống CLI fallback
             }
         }
-        return ocrViaCli(imageBytes, knownSerials);
+        Map<String, Object> result = ocrViaCli(imageBytes, knownSerials);
+        logResult(result, "cli");
+        return result;
+    }
+
+    private void logResult(Map<String, Object> result, String via) {
+        String method = String.valueOf(result.getOrDefault("method", "?"));
+        int count = result.get("candidates") instanceof Collection<?> collection ? collection.size() : 0;
+        System.err.println("[OCR] via=" + via + " method=" + method
+            + " candidates=" + count + " ms=" + result.getOrDefault("elapsed_ms", "?"));
     }
 
     // ── Daemon ocr_server.py ────────────────────────────────────────────────
@@ -139,6 +159,7 @@ public class OcrService {
             result.put("method", method);
             result.put("rawText", String.join(", ", candidates));
         }
+        if (parsed.get("elapsed_ms") != null) result.put("elapsed_ms", parsed.get("elapsed_ms"));
         return result;
     }
 
