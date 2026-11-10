@@ -90,15 +90,18 @@ public class OcrService {
      * {success, candidates, method, rawText} hoặc {success:false, error}.
      */
     public Map<String, Object> ocr(byte[] imageBytes, List<String> knownSerials) {
-        if (serverEnabled && Files.exists(ocrServerScript)) {
+        if (serverEnabled && Files.exists(ocrServerScript)
+                && System.currentTimeMillis() >= serverCooldownUntil) {
             try {
                 Map<String, Object> result = ocrViaServer(imageBytes, knownSerials, true);
                 if (result != null) {
                     logResult(result, "daemon");
                     return result;
                 }
+                // Daemon không dùng được: thử lại sau 2 phút thay vì chờ mỗi lần quét.
+                serverCooldownUntil = System.currentTimeMillis() + 120_000;
             } catch (Exception ignored) {
-                // rơi xuống CLI fallback
+                serverCooldownUntil = System.currentTimeMillis() + 120_000;
             }
         }
         Map<String, Object> result = ocrViaCli(imageBytes, knownSerials);
@@ -106,11 +109,15 @@ public class OcrService {
         return result;
     }
 
+    private volatile long serverCooldownUntil = 0;
+
     private void logResult(Map<String, Object> result, String via) {
         String method = String.valueOf(result.getOrDefault("method", "?"));
         int count = result.get("candidates") instanceof Collection<?> collection ? collection.size() : 0;
+        Object error = result.get("error");
         System.err.println("[OCR] via=" + via + " method=" + method
-            + " candidates=" + count + " ms=" + result.getOrDefault("elapsed_ms", "?"));
+            + " candidates=" + count + " ms=" + result.getOrDefault("elapsed_ms", "?")
+            + (error == null ? "" : " error=" + error));
     }
 
     // ── Daemon ocr_server.py ────────────────────────────────────────────────
@@ -165,12 +172,21 @@ public class OcrService {
 
     private boolean ensureServerReady() {
         if (serverProcess != null && serverProcess.isAlive()) {
-            if (healthOk()) return true;
+            int status = healthStatus();
+            if (status == 200) return true;
+            if (status == 500) {
+                System.err.println("[OCR-SERVER] Engine lỗi: " + lastHealthError);
+                killServer();
+                return false;
+            }
             killServer();
         }
         synchronized (SERVER_LOCK) {
-            if (serverProcess != null && serverProcess.isAlive()) return healthOk();
-            if (!Files.exists(ocrServerScript)) return false;
+            if (serverProcess != null && serverProcess.isAlive()) return healthStatus() == 200;
+            if (!Files.exists(ocrServerScript)) {
+                System.err.println("[OCR-SERVER] Thiếu ocr_server.py tại " + ocrServerScript);
+                return false;
+            }
             try {
                 ProcessBuilder pb = new ProcessBuilder(
                     pythonExe, ocrServerScript.toString(), "--port", String.valueOf(serverPort));
@@ -184,10 +200,19 @@ public class OcrService {
             long deadline = System.currentTimeMillis() + SERVER_READY_TIMEOUT_MS;
             while (System.currentTimeMillis() < deadline) {
                 if (!serverProcess.isAlive()) {
+                    System.err.println("[OCR-SERVER] Tiến trình thoát sớm; xem " + ocrServerLog);
                     killServer();
                     return false;
                 }
-                if (healthOk()) return true;
+                int status = healthStatus();
+                if (status == 200) return true;
+                if (status == 500) {
+                    // Engine báo lỗi nạp model (thiếu thư viện, model hỏng...):
+                    // dừng chờ ngay thay vì treo cả phút.
+                    System.err.println("[OCR-SERVER] Engine lỗi: " + lastHealthError);
+                    killServer();
+                    return false;
+                }
                 try {
                     Thread.sleep(300);
                 } catch (InterruptedException e) {
@@ -200,7 +225,9 @@ public class OcrService {
         }
     }
 
-    private boolean healthOk() {
+    private volatile String lastHealthError = null;
+
+    private int healthStatus() {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("http://127.0.0.1:" + serverPort + "/health"))
@@ -208,9 +235,11 @@ public class OcrService {
                 .GET()
                 .build();
             HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200;
+            int status = response.statusCode();
+            if (status == 500) lastHealthError = response.body();
+            return status;
         } catch (Exception e) {
-            return false;
+            return 0;
         }
     }
 

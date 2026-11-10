@@ -1743,7 +1743,7 @@ async function buildImageVariants(file) {
 
 async function runServerOcr(blob) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 70000);
+  const timeoutId = setTimeout(() => controller.abort(), 50000);
   try {
     const formData = new FormData();
     formData.append('image', blob, 'image.jpg');
@@ -1820,6 +1820,7 @@ async function triggerOCR(file) {
 
   // ── Bước 3: OCR từng biến thể (fast-exit khi khớp Excel) ──────
   const allCandidates = new Set();
+  let serverError = '';
   
   for (const { name, blob } of variants) {
     setBadge2('running', `⏳ Server OCR: ${name}...`);
@@ -1827,7 +1828,6 @@ async function triggerOCR(file) {
 
     let cands = [];
     try {
-      // Gọi RapidOCR/PaddleOCR; lỗi engine cũng kích hoạt fallback.
       const data = await runServerOcr(blob);
       if (!data.success) throw new Error(data.error || 'OCR không khả dụng');
       if (data.success && data.candidates) {
@@ -1835,16 +1835,11 @@ async function triggerOCR(file) {
         addLog(`📄 Server OCR [${name}] raw: ${data.rawText.replace(/\n/g,'|').substring(0,100)}`);
       }
     } catch (e) {
-      addLog(`⚠ Lỗi Server OCR [${name}]: ${e.message} → Fallback Tesseract.js`);
-      // Fallback Tesseract.js (WASM) nếu server lỗi
-      if (typeof Tesseract !== 'undefined') {
-        try {
-          const r11 = await runTesseract(blob, 11).catch(() => ({ rawText: '', filteredText: '' }));
-          const textToUse = r11.filteredText || r11.rawText;
-          if (textToUse) addLog(`📄 Tesseract.js [${name}] raw: ${textToUse.replace(/\n/g,'|').substring(0,100)}`);
-          cands = extractCandidates(textToUse, noiseWords);
-        } catch (e2) {}
-      }
+      // Không chạy Tesseract.js nữa: trên điện thoại nó mất 30-60s và thường
+      // đọc sai; báo lỗi ngay để kiểm tra server (ocr-server.log / nas-*-error.log).
+      serverError = e.message;
+      addLog(`❌ Lỗi Server OCR [${name}]: ${e.message}`);
+      break;
     }
 
     if (cands.length) {
@@ -1867,6 +1862,14 @@ async function triggerOCR(file) {
   }
 
   // ── Bước 4: Tổng hợp kết quả (không có fast-exit) ─────────────
+  if (serverError && !allCandidates.size) {
+    setBadge2('fail', '❌ Server OCR lỗi');
+    addLog(`❌ Server OCR lỗi: ${serverError}`);
+    addLog('💡 Kiểm tra trên máy chủ: ocr-server.log, nas-*-error.log và cổng 18081.');
+    _ocrResult = { rawText: '', candidates: [] };
+    return;
+  }
+
   const rawCandidates = [...allCandidates];
 
   if (rawCandidates.length) {
