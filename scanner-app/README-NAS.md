@@ -9,6 +9,7 @@ Profile `nas` hiện dùng cổng **18080**, chỉ lắng nghe **127.0.0.1**. T�
 - Nếu chọn nơi lưu, Word được ghi ở máy chạy backend. Nếu không chọn nơi lưu, trình duyệt tải Word về.
 - Trùng tên Word: hiện thông báo, không ghi đè file cũ và giữ thông tin trên form.
 - Excel và nơi lưu thuộc từng phiên trình duyệt. Tải lại trang bắt đầu phiên làm việc trống.
+- Ảnh chụp từ camera được tự lưu vào `C:/ScannerData/Captures` (cấu hình `scanner.storage.captures-root`) để lần sau chọn lại; tên file gồm thời điểm, slot và SN nếu đã có.
 - Ô 1/2 nhớ chung thư mục chọn ảnh trong phiên, gợi ý tên ảnh tồn tại kế tiếp. Ô 3/4 nhớ chung vị trí thư mục riêng.
 - Truy cập bằng `localhost` trên Windows dùng hộp thoại Windows; truy cập từ điện thoại dùng hộp thoại duyệt thư mục trong web.
 - Excel PO chọn trực tiếp trên ổ đĩa của máy chủ qua hộp thoại duyệt trong web (duyệt ổ/thư mục, dán được đường dẫn UNC); vẫn có nút tải Excel từ điện thoại. Khi `restricted=true`, chỉ duyệt được trong thư mục báo cáo đã cấu hình.

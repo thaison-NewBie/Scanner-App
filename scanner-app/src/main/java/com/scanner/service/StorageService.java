@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /** Giới hạn vùng NAS; từng loại thư mục có thể được mở rộng theo cấu hình. */
@@ -17,18 +19,21 @@ public class StorageService {
     private final boolean imagesUnrestricted;
     private final String imagesRoot;
     private final String reportsRoot;
+    private final String capturesRoot;
 
     public StorageService(
             @Value("${scanner.storage.restricted:false}") boolean restricted,
             @Value("${scanner.storage.reports-unrestricted:false}") boolean reportsUnrestricted,
             @Value("${scanner.storage.images-unrestricted:false}") boolean imagesUnrestricted,
             @Value("${scanner.storage.images-root:}") String imagesRoot,
-            @Value("${scanner.storage.reports-root:}") String reportsRoot) {
+            @Value("${scanner.storage.reports-root:}") String reportsRoot,
+            @Value("${scanner.storage.captures-root:C:/ScannerData/Captures}") String capturesRoot) {
         this.restricted = restricted;
         this.reportsUnrestricted = reportsUnrestricted;
         this.imagesUnrestricted = imagesUnrestricted;
         this.imagesRoot = imagesRoot;
         this.reportsRoot = reportsRoot;
+        this.capturesRoot = capturesRoot;
         if (restricted && (imagesRoot.isBlank() || reportsRoot.isBlank())) {
             throw new IllegalArgumentException("Chưa cấu hình thư mục ảnh và báo cáo NAS");
         }
@@ -39,6 +44,7 @@ public class StorageService {
     public Map<String, Object> config() {
         return Map.of("success", true, "nasMode", restricted,
             "imagesRoot", imagesRoot, "reportsRoot", reportsRoot,
+            "capturesRoot", capturesRoot,
             "reportsUnrestricted", reportsUnrestricted,
             "imagesUnrestricted", imagesUnrestricted,
             "foldersUnrestricted", !restricted || (reportsUnrestricted && imagesUnrestricted));
@@ -225,6 +231,41 @@ public class StorageService {
         Path path = directory(value, "reports");
         if (!Files.isWritable(path)) throw new AccessDeniedException("Không có quyền ghi vào thư mục báo cáo");
         return path;
+    }
+
+    /**
+     * Lưu một ảnh chụp từ camera vào thư mục lưu trữ riêng để lần sau dùng lại.
+     * Tên file: yyyyMMdd_HHmmss_slot<slot>[_<sn>].<ext>; không bao giờ ghi đè
+     * ảnh cũ (CREATE_NEW, thêm hậu tố nếu cùng giây có nhiều ảnh).
+     */
+    public Path saveCapture(int slot, String serialNumber, byte[] bytes, String extension) throws IOException {
+        String ext = (extension == null ? "jpg" : extension).toLowerCase(Locale.ROOT);
+        if (ext.startsWith(".")) ext = ext.substring(1);
+        if (!ext.matches("jpe?g|png|webp|bmp")) {
+            throw new IllegalArgumentException("Ảnh lưu trữ phải là jpg/png/webp/bmp");
+        }
+        int safeSlot = Math.max(1, Math.min(4, slot));
+        String safeSn = (serialNumber == null ? "" : serialNumber)
+            .replaceAll("[^a-zA-Z0-9_-]", "_");
+        if (safeSn.length() > 40) safeSn = safeSn.substring(0, 40);
+
+        Path dir = Paths.get(capturesRoot).toAbsolutePath().normalize();
+        Files.createDirectories(dir);
+        String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        for (int attempt = 0; attempt < 100; attempt++) {
+            String suffix = attempt == 0 ? "" : "_" + attempt;
+            String filename = String.format("%s_slot%d%s%s.%s", stamp, safeSlot,
+                safeSn.isEmpty() ? "" : "_" + safeSn, suffix, ext);
+            Path target = dir.resolve(filename);
+            try (OutputStream out = Files.newOutputStream(
+                    target, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                out.write(bytes);
+                return target;
+            } catch (FileAlreadyExistsException ignored) {
+                // cùng giây có nhiều ảnh → thử hậu tố tiếp theo
+            }
+        }
+        throw new IOException("Không tạo được tên file ảnh lưu trữ");
     }
 
     public Path destination(String folder, String filename) throws IOException {

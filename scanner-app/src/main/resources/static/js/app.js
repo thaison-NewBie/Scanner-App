@@ -7,6 +7,7 @@ const state = {
   excelFolder:  '',
   excelLoaded:  false,
   savePath:     '',
+  capturesRoot: '',
   // Dùng khi xuất file
   pendingExport: null,    // { formData, serialNumber }
   selectedSN:    '',
@@ -250,10 +251,18 @@ async function loadStorageConfig() {
   const config = await response.json();
   if (!response.ok || !config.success) throw new Error('Không kết nối được server');
   _storageConfig = config;
+  state.capturesRoot = config.capturesRoot || '';
+  const capturesBtn = $('capturesRootBtn');
+  if (capturesBtn) capturesBtn.style.display = state.capturesRoot ? '' : 'none';
   const foldersUnrestricted = config.foldersUnrestricted || !config.nasMode;
   $('folderRootButton').textContent = foldersUnrestricted ? '💻 Vị trí máy tính' : '📁 Vị trí NAS';
   if (foldersUnrestricted) $('manualPathInput').placeholder = 'Dán đường dẫn thư mục trên máy';
   return config;
+}
+
+/** Mở thẳng thư mục chứa ảnh chụp đã tự lưu trên máy chủ. */
+function browseCapturesRoot() {
+  if (state.capturesRoot) browseTo(state.capturesRoot);
 }
 
 async function openBrowser(target) {
@@ -501,6 +510,8 @@ function setupImageInputs() {
         // Xử lý EXIF orientation và resize nếu cần
         const correctedFile = await correctImageOrientation(file);
         handleImageFile(n, correctedFile);
+        // Tự lưu ảnh chụp lên máy chủ để lần sau dùng lại
+        void autoSaveCapture(n, correctedFile);
         // Reset để có thể chụp lại cùng slot
         cam.value = '';
       });
@@ -766,6 +777,30 @@ function handleImageFile(slot, file) {
   reader.readAsDataURL(file);
   addLog(`📷 Ảnh ${slot}: ${file.name}`);
   updateProgress();
+}
+
+/**
+ * Tự lưu ảnh vừa chụp lên máy chạy app (thư mục capturesRoot) để lần sau
+ * dùng lại được. Chạy ngầm, không chặn thao tác của người dùng.
+ */
+async function autoSaveCapture(slot, file) {
+  if (!state.capturesRoot) return;
+  try {
+    const form = new FormData();
+    form.append('image', file, 'capture.jpg');
+    form.append('slot', String(slot));
+    const serial = ($('serialManual')?.value || state.selectedSN || '').trim();
+    if (serial) form.append('serialNumber', serial);
+    const res = await fetch('/api/capture/save', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.saved) {
+      addLog(`💾 Đã lưu vào máy chủ: ${data.filename}`);
+    } else if (!res.ok) {
+      addLog('⚠ Không lưu được ảnh vào máy chủ: ' + (data.error || 'Lỗi không rõ'));
+    }
+  } catch (e) {
+    addLog('⚠ Không lưu được ảnh vào máy chủ: ' + e.message);
+  }
 }
 
 async function showNextExistingImageSuggestion(slot) {
@@ -1729,11 +1764,13 @@ function isLikelySerialCandidate(value) {
   // Excel là nguồn xác nhận cuối cùng: cho phép cả SN chỉ gồm số hoặc có
   // dạng giống ngày nếu chuỗi đó thực sự nằm trong danh sách đã tải.
   if (Array.isArray(allSNList) && allSNList.includes(candidate)) return true;
-  if (candidate.length < 8 || candidate.length > 30 || !/\d/.test(candidate)) return false;
+  if (candidate.length < 6 || candidate.length > 30 || !/\d/.test(candidate)) return false;
   if (/^(?:19|20)\d{6}$/.test(candidate)) return false;
   if (SERIAL_NOISE_PREFIXES.some(prefix => candidate.startsWith(prefix))) return false;
   const digitCount = (candidate.match(/\d/g) || []).length;
-  return digitCount >= 3 && digitCount / candidate.length >= 0.30;
+  // Nới hơn bản cũ (8 ký tự / 30% chữ số) để SN ngắn hoặc ít số không bị
+  // bỏ sót; Excel vẫn là nguồn xác nhận cuối cùng.
+  return digitCount >= 2 && digitCount / candidate.length >= 0.15;
 }
 
 function extractCandidates(text, noiseWords = []) {

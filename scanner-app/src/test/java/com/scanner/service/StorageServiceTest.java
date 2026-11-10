@@ -14,7 +14,8 @@ class StorageServiceTest {
         Files.createDirectories(temp.resolve("images"));
         Files.createDirectories(temp.resolve("reports"));
         return new StorageService(true, false, false,
-            temp.resolve("images").toString(), temp.resolve("reports").toString());
+            temp.resolve("images").toString(), temp.resolve("reports").toString(),
+            temp.resolve("captures").toString());
     }
 
     @Test void browseKeepsEachPurposeInsideItsRoot() throws Exception {
@@ -41,7 +42,8 @@ class StorageServiceTest {
     @Test void shareRootLabelCanBeListedWithoutConnectingToNas() throws Exception {
         assumeTrue(System.getProperty("os.name").startsWith("Windows"));
         var storage = new StorageService(true, false, false,
-            "\\\\192.168.1.8\\daiduongtelecom", "\\\\192.168.1.8\\filebaocao");
+            "\\\\192.168.1.8\\daiduongtelecom", "\\\\192.168.1.8\\filebaocao",
+            temp.resolve("captures").toString());
         var result = storage.browse("", "reports");
         assertTrue(result.get("entries").toString().contains("name=filebaocao"));
     }
@@ -64,7 +66,8 @@ class StorageServiceTest {
     @Test void reportsCanBeSavedOutsideNasWhenEnabled() throws Exception {
         Path anywhere = Files.createDirectory(temp.resolve("anywhere"));
         var storage = new StorageService(true, true, false,
-            temp.resolve("images").toString(), temp.resolve("reports").toString());
+            temp.resolve("images").toString(), temp.resolve("reports").toString(),
+            temp.resolve("captures").toString());
         assertEquals(anywhere, storage.saveDirectory(anywhere.toString()));
         Path destination = storage.destination(anywhere.toString(), "TrcSC_123.docx");
         storage.saveNew(destination, new byte[]{1, 2});
@@ -78,7 +81,8 @@ class StorageServiceTest {
         Path image = Files.write(anywhere.resolve("chosen.jpg"), new byte[]{1});
         Path nonImage = Files.writeString(anywhere.resolve("notes.txt"), "not an image");
         var storage = new StorageService(true, false, true,
-            temp.resolve("images").toString(), temp.resolve("reports").toString());
+            temp.resolve("images").toString(), temp.resolve("reports").toString(),
+            temp.resolve("captures").toString());
 
         assertEquals(java.util.List.of(image), storage.images(anywhere.toString()));
         assertEquals(image, storage.image(image.toString()));
@@ -87,12 +91,24 @@ class StorageServiceTest {
 
     @Test void unrestrictedStorageCanUseAnyReadableOrWritableFolder() throws Exception {
         Path anywhere = Files.createDirectory(temp.resolve("anywhere-on-machine"));
-        var storage = new StorageService(false, false, false, "", "");
+        var storage = new StorageService(false, false, false, "", "",
+            temp.resolve("captures").toString());
 
         assertEquals(anywhere, storage.saveDirectory(anywhere.toString()));
         assertEquals(anywhere.toString(), storage.browse(anywhere.toString(), "reports").get("current"));
         Path image = Files.write(anywhere.resolve("scan.jpg"), new byte[]{1});
         assertEquals(image, storage.image(image.toString()));
+    }
+
+    @Test void capturedImagesAreSavedWithoutOverwrite() throws Exception {
+        var storage = service();
+        Path first = storage.saveCapture(2, "SN 123/45", new byte[]{1}, "jpg");
+        Path second = storage.saveCapture(2, "SN 123/45", new byte[]{2}, "jpg");
+        assertNotEquals(first, second);
+        assertTrue(Files.exists(first) && Files.exists(second));
+        assertTrue(first.getFileName().toString().contains("slot2"));
+        assertTrue(first.getFileName().toString().contains("SN_123_45"));
+        assertThrows(IllegalArgumentException.class, () -> storage.saveCapture(1, "", new byte[]{1}, "txt"));
     }
 
     @Test void noOverwriteEvenWhenTwoRequestsSaveTogether() throws Exception {
