@@ -465,6 +465,8 @@ def scan_image(pil_original: Image.Image, known_serials=None, deadline_seconds: 
     text_read = False   # chỉ đếm chữ do OCR đọc, không tính barcode không khớp
 
     # ── 2) OCR nhanh vùng giữa ────────────────────────────────────────
+    # Ảnh thường (tem nằm giữa) khớp ngay ở lượt này; tem lệch/xoay sẽ được
+    # các vùng cắt ở bước 3 đọc tiếp.
     raw = run_ocr_on_pil(center, FAST_DET_LIMIT)
     serials = deduplicate(extract_s_label_serials(raw, known_serials)
                           + extract_serials(raw, known_serials))
