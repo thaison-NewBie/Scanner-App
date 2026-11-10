@@ -25,10 +25,11 @@ RUN /opt/venv/bin/python -m pip install --no-cache-dir -r /app/requirements-ocr.
 
 WORKDIR /app
 COPY ocr.py ./ocr.py
+COPY ocr_server.py ./ocr_server.py
 COPY --from=build /build/target/scanner-app-1.0.0.jar ./scanner-app.jar
 
 # Detect missing native libraries/models during the build, before deployment.
-RUN /opt/venv/bin/python -c "import ocr; assert ocr.HAS_PYZBAR; assert ocr.HAS_CV2; ocr.initialize_ocr(); assert ocr.OCR_BACKEND == 'rapid'" \
+RUN /opt/venv/bin/python -c "import ocr, ocr_server; assert ocr.HAS_PYZBAR; assert ocr.HAS_CV2; ocr.initialize_ocr(); assert ocr.OCR_BACKEND == 'rapid'" \
     && mkdir -p /data/images /data/reports
 
 USER 1000:1000

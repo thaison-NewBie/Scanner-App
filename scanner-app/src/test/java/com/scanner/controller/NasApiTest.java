@@ -35,6 +35,8 @@ class NasApiTest {
         properties.add("scanner.storage.restricted", () -> true);
         properties.add("scanner.storage.images-root", images::toString);
         properties.add("scanner.storage.reports-root", reports::toString);
+        // Không spawn daemon ocr_server.py khi chạy test.
+        properties.add("scanner.ocr.server-enabled", () -> false);
     }
 
     @AfterAll static void cleanup() throws Exception {

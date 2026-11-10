@@ -2,6 +2,29 @@
 
 Phần scan từ bản desktop được tích hợp trong `ocr.py`; Java gọi qua `/api/ocr`.
 
+## ocr_server.py — nạp model một lần
+
+Java ưu tiên gọi OCR qua daemon `ocr_server.py` (HTTP trên `127.0.0.1:18081`)
+thay vì spawn `ocr.py` từng lần:
+
+- Daemon nạp RapidOCR **một lần** lúc khởi động; mỗi lần quét chỉ còn thời
+  gian inference (lượt đầu khớp Excel khoảng 2s thay vì 15s+ như trước).
+- Java tự khởi động daemon khi cần, chờ health rồi mới gửi ảnh; nếu không
+  chạy được thì tự quay về spawn `ocr.py` như hành vi cũ.
+- Cổng cấu hình `scanner.ocr.server-port` (mặc định 18081); tắt daemon bằng
+  `scanner.ocr.server-enabled=false`.
+
+Chiến lược hai tầng trong `ocr.py`:
+
+- Lượt quét đầu (vùng giữa ảnh slot 2) dùng det **736** để ảnh rõ khớp nhanh.
+- Chỉ khi chưa khớp Excel mới quét sâu với det **960** (chỉnh qua biến môi
+  trường `SCANNER_OCR_DET_LIMIT`; 1280 nhận diện chữ nhỏ tốt hơn nhưng mỗi
+  lượt quét chậm hơn đáng kể trên CPU yếu), gồm các biến thể nâng tương
+  phản/phóng to/xoay và fallback quét cả ảnh khi tem SN không nằm giữa.
+- Khi có Excel, ký tự dễ đọc nhầm (O/0, I/1, B/8, S/5, Z/2, G/6) được chuẩn
+  hoá trước khi so khớp nên đọc nhầm 1-2 ký tự vẫn tự xác nhận, không phải
+  quét lại.
+
 ## Cài đặt
 
 ```powershell

@@ -1,8 +1,10 @@
 """
 Scan barcode + RapidOCR (PaddleOCR 2.x dự phòng).
-Gọi: python ocr.py <image_path> [serials_json_path]
+Gọi CLI: python ocr.py <image_path> [serials_json_path]
 stdout: một JSON {candidates, method, error}; log engine chuyển sang stderr.
 OCR ảnh gốc trước, sau đó chỉ thử một số biến thể có ích cho chữ SN mờ.
+
+scan_image() là lõi dùng chung cho CLI và ocr_server (daemon nạp model 1 lần).
 """
 import sys
 import re
@@ -68,9 +70,17 @@ def initialize_ocr():
                         'rec_model_path': models / 'ch_PP-OCRv4_rec_infer.onnx',
                     }
                     options = {k: str(v) for k, v in paths.items()} if all(p.is_file() for p in paths.values()) else {}
-                    # Tránh ba session ONNX tạo quá nhiều luồng trên CPU nhiều nhân.
-                    ocr_engine = RapidOCR(intra_op_num_threads=min(4, os.cpu_count() or 1),
-                                         inter_op_num_threads=1, **options)
+                    # text_score thấp hơn mặc định để giữ chuỗi mờ; shape-filter
+                    # ở extract_serials loại nhiễu thay cho ngưỡng cao. Độ phân
+                    # giải det đổi động giữa lượt quét (xem FAST/DEEP_DET_LIMIT).
+                    ocr_engine = RapidOCR(
+                        intra_op_num_threads=min(4, os.cpu_count() or 1),
+                        inter_op_num_threads=1,
+                        det_limit_side_len=DEEP_DET_LIMIT,
+                        det_limit_type='min',
+                        det_box_thresh=0.4,
+                        text_score=0.35,
+                        **options)
                 else:
                     from paddleocr import PaddleOCR
                     ocr_engine = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)
@@ -99,6 +109,28 @@ NOISE_PREFIXES = {
 
 # Kích thước tối đa để tăng tốc OCR
 MAX_DIM = 1800
+
+# Ngân sách vòng quét sau khi engine đã sẵn sàng (giây). Java giữ timeout
+# 60s làm lớp an toàn khi engine phải nạp model lần đầu.
+DEADLINE_SECONDS = 12.0
+
+# Hai tầng độ phân giải phát hiện chữ:
+# - FAST_DET_LIMIT: lượt quét đầu (vùng giữa) chạy nhanh để ăn ngay ảnh rõ.
+# - DEEP_DET_LIMIT: quét sâu chỉ chạy khi lượt đầu chưa khớp; cao hơn giúp
+#   phát hiện chữ SN nhỏ trên tem. Có thể chỉnh theo CPU máy chủ qua biến
+#   môi trường SCANNER_OCR_DET_LIMIT (mặc định 960; 1280 nhận diện tốt hơn
+#   nhưng mỗi lượt quét chậm hơn đáng kể trên CPU yếu).
+FAST_DET_LIMIT = 736.0
+DEEP_DET_LIMIT = float(os.environ.get('SCANNER_OCR_DET_LIMIT', '960'))
+
+# Các ký tự OCR thường đọc nhầm sang nhau. Khi có Excel, chuỗi đọc được sẽ
+# được "chuẩn hoá" theo bảng này trước khi so khớp nên ảnh rõ nhưng đọc nhầm
+# 1-2 ký tự vẫn tự xác nhận được mà không cần quét lại.
+CONFUSION_MAP = {'O': '0', 'I': '1', 'B': '8', 'S': '5', 'Z': '2', 'G': '6'}
+
+
+def canonical(value: str) -> str:
+    return ''.join(CONFUSION_MAP.get(ch, ch) for ch in value)
 
 
 def ok(candidates: list, method: str):
@@ -139,7 +171,11 @@ def scan_barcode(pil_img: Image.Image) -> list:
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
 
-def run_ocr_on_pil(pil_img: Image.Image) -> list:
+def run_ocr_on_pil(pil_img: Image.Image, det_limit=None) -> list:
+    # RapidOCR đọc limit_side_len của TextDetector mỗi lần gọi, nên có thể
+    # hạ nhanh cho lượt đầu rồi nâng lại khi quét sâu.
+    if det_limit is not None and OCR_BACKEND == 'rapid' and ocr_engine is not None:
+        ocr_engine.text_det.limit_side_len = det_limit
     # Hai engine nhận ndarray theo thứ tự màu BGR.
     img_np = np.array(pil_img.convert('RGB'))[:, :, ::-1].copy()
     with redirect_stdout(sys.stderr):
@@ -149,7 +185,8 @@ def run_ocr_on_pil(pil_img: Image.Image) -> list:
         else:
             result = ocr_engine.ocr(img_np, cls=True)
             lines = [(line[1][0], float(line[1][1])) for line in ((result or [None])[0] or [])]
-    return sorted((item for item in lines if item[1] > 0.45), key=lambda item: -item[1])
+    # Engine đã lọc theo text_score (0.35); chỉ bỏ các dòng gần như chắc chắn sai.
+    return sorted((item for item in lines if item[1] > 0.30), key=lambda item: -item[1])
 
 
 def looks_like_serial(value: str, known_serials=None) -> bool:
@@ -157,18 +194,17 @@ def looks_like_serial(value: str, known_serials=None) -> bool:
     value = str(value or '').strip().upper()
     if known_serials and value in known_serials:
         return True
-    if not 8 <= len(value) <= 30 or not any(c.isdigit() for c in value):
+    if not 6 <= len(value) <= 30 or not any(c.isdigit() for c in value):
         return False
     if re.match(r'^(?:19|20)\d{6}$', value):
         return False  # ngày YYYYMMDD bị OCR nhầm thành SN
     if any(value.startswith(prefix) for prefix in NOISE_PREFIXES):
         return False
     digit_count = sum(c.isdigit() for c in value)
-    # SN thường có nhiều chữ số; loại các từ có một con số lẻ như TYPE-A1.
-    if digit_count < 3 or digit_count / len(value) < 0.30:
+    # SN ngắn hoặc ít chữ số vẫn cho qua để người dùng xem ở giao diện;
+    # Excel là nguồn xác nhận cuối cùng nên không sợ tự xuất sai.
+    if digit_count < 2 or digit_count / len(value) < 0.15:
         return False
-    # Chuỗi toàn chữ không thể là SN. Chuỗi toàn số vẫn cho phép vì một số
-    # dòng thiết bị dùng serial chỉ gồm chữ số (Excel sẽ xác nhận chính xác).
     return True
 
 
@@ -240,23 +276,15 @@ def crop_serial_center(pil_img: Image.Image) -> Image.Image:
 def build_image_variants(pil_img: Image.Image):
     """
     Tạo các biến thể tiền xử lý cho ảnh mờ/không hoàn thiện.
-    Ưu tiên các biến thể hiệu quả nhất với ảnh serial mờ.
+    Ưu tiên biến thể rẻ và hiệu quả; xoay 90/270 chỉ chạy cuối vì tốn CPU nhất.
     """
     w, h = pil_img.size
 
-    # Xử lý tương phản trước vì đa số ảnh dọc đã được EXIF xoay đúng chiều.
-    # Nếu chưa khớp, mới thử hai hướng 90°/270° cho ảnh cầm máy dọc.
-    portrait = h > (w * 1.12)
     yield 'enhanced', enhance_for_ocr(pil_img)
-    if portrait:
-        yield 'rotate90', pil_img.rotate(90, expand=True)
-        yield 'rotate270', pil_img.rotate(270, expand=True)
-
-    # Ảnh gốc đã được OCR trước đó nên không cần lặp lại các biến thể cũ.
 
     # Phóng to vừa phải cho tem SN nhỏ, tránh tạo ảnh 3600–4800 px quá chậm.
     scale = min(1.5, 2400 / max(w, h))
-    if not portrait and scale > 1.02:
+    if scale > 1.02:
         yield 'zoom', pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
     gray_np = np.array(pil_img.convert('L'))
@@ -269,8 +297,70 @@ def build_image_variants(pil_img: Image.Image):
         threshold = int(gray_np.mean())
         yield 'bw_auto', gray.point(lambda x: 0 if x < threshold else 255).convert('RGB')
 
+    # Xoay cho ảnh cầm máy dọc (đắt nhất nên để cuối cùng).
+    portrait = h > (w * 1.12)
+    if portrait:
+        yield 'rotate90', pil_img.rotate(90, expand=True)
+        yield 'rotate270', pil_img.rotate(270, expand=True)
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
+
+# ── LÕI QUÉT (dùng chung cho CLI và ocr_server) ──────────────────────────────
+
+def scan_image(pil_original: Image.Image, known_serials=None, deadline_seconds: float = DEADLINE_SECONDS):
+    """
+    Trả dict {candidates, method, error}. Không in ra stdout.
+    Thứ tự: barcode (cả ảnh + vùng giữa) → OCR vùng giữa → biến thể vùng giữa
+    → OCR cả ảnh (fallback khi tem SN không nằm giữa) → biến thể cả ảnh.
+    """
+    known_serials = {str(s).strip().upper() for s in (known_serials or ()) if str(s).strip()}
+    deadline = time.monotonic() + deadline_seconds
+
+    # ── GIAI ĐOẠN 1: Barcode (nhanh, chính xác nhất) ────────────────────
+    center = crop_serial_center(pil_original)
+    barcode_results = deduplicate(scan_barcode(pil_original) + scan_barcode(center))
+    matched = exact_matches(barcode_results, known_serials)
+    if matched or (barcode_results and not known_serials):
+        return {"candidates": matched or barcode_results, "method": "barcode", "error": None}
+
+    if OCR_BACKEND is None:
+        try:
+            initialize_ocr()
+        except Exception as exc:
+            if barcode_results:
+                return {"candidates": barcode_results, "method": "barcode", "error": None}
+            return {"candidates": [], "method": "none", "error": str(exc)}
+
+    # ── GIAI ĐOẠN 2: OCR theo thứ tự vùng/biến thể ───────────────────────
+    all_serials = list(barcode_results)
+
+    def passes():
+        # Lượt đầu chạy nhanh (det 736) để ảnh rõ khớp trong ~1-2s.
+        yield 'center', center, FAST_DET_LIMIT
+        # Quét sâu chỉ chạy khi lượt đầu chưa khớp Excel.
+        for name, img in build_image_variants(center):
+            yield name, img, DEEP_DET_LIMIT
+        # Fallback: tem SN có thể không nằm ở giữa (ảnh rõ nhưng crop cứng
+        # cắt mất dòng SN) → quét cả ảnh gốc và một biến thể nâng tương phản.
+        yield 'full', pil_original, DEEP_DET_LIMIT
+        yield 'full_enhanced', enhance_for_ocr(pil_original), DEEP_DET_LIMIT
+
+    for name, img, det_limit in passes():
+        if time.monotonic() >= deadline:
+            break
+        raw = run_ocr_on_pil(img, det_limit)
+        serials = extract_serials(raw, known_serials)
+        matched = exact_matches(serials, known_serials)
+        if matched:
+            # Chỉ thoát sớm khi khớp Excel, tránh dừng ở mã model/nhiễu.
+            return {"candidates": matched, "method": f"ocr_{name}_exact", "error": None}
+        all_serials.extend(serials)
+
+    return {"candidates": deduplicate(all_serials),
+            "method": 'ocr_deep' if all_serials else 'ocr_no_result',
+            "error": None}
+
+
+# ── MAIN (CLI) ────────────────────────────────────────────────────────────────
 
 def main():
     if len(sys.argv) < 2:
@@ -303,64 +393,35 @@ def main():
         fail("Loi doc anh: " + str(e))
         sys.exit(0)
 
-    # Slot 2 là ảnh zoom serial: ưu tiên vùng giữa để bỏ qua chữ/nền xung
-    # quanh, giảm thời gian xử lý và tránh trả về model/date không liên quan.
-    pil_serial = crop_serial_center(pil_original)
-
-    # ── GIAI ĐOẠN 1: Barcode vùng SN (nhanh, chính xác nhất) ─────────────
-    barcode_results = scan_barcode(pil_serial)
-    matched = exact_matches(barcode_results, known_serials)
-    if matched or (barcode_results and not known_serials):
-        ok(matched or barcode_results, "barcode")
-        sys.exit(0)
-
-    try:
-        initialize_ocr()
-    except Exception as exc:
-        if barcode_results:
-            ok(barcode_results, 'barcode')
-        else:
-            fail(str(exc))
-        return
-
-    # ── GIAI ĐOẠN 2: OCR ảnh gốc ─────────────────────────────────────────
-    all_serials = list(barcode_results)
-    # Dừng quét sâu sớm để UI phản hồi nhanh. Ảnh rõ thường trả về ở lượt OCR đầu.
-    deadline = time.monotonic() + 15
-
-    raw = run_ocr_on_pil(pil_serial)
-    serials = extract_serials(raw, known_serials)
-    all_serials.extend(serials)
-
-    matched = exact_matches(serials, known_serials)
-    if matched:
-        ok(matched, "ocr_original_exact")
-        sys.exit(0)
-
-    # ── GIAI ĐOẠN 3: Tiền xử lý chuyên sâu cho ảnh mờ ───────────────────
-    for variant_name, variant_img in build_image_variants(pil_serial):
-        if time.monotonic() >= deadline:
-            break
-        raw = run_ocr_on_pil(variant_img)
-        serials = extract_serials(raw, known_serials)
-        matched = exact_matches(serials, known_serials)
-        if matched:
-            # Chỉ thoát sớm khi khớp Excel, tránh dừng ở mã model/nhiễu.
-            ok(matched, f"ocr_{variant_name}_exact")
-            sys.exit(0)
-        all_serials.extend(serials)
-
-    # Không tìm thấy gì
-    ok(deduplicate(all_serials), 'ocr_deep' if all_serials else 'ocr_no_result')
+    output = scan_image(pil_original, known_serials)
+    print(json.dumps(output, ensure_ascii=False))
+    sys.exit(0)
 
 
 def exact_matches(candidates, known_serials):
-    """Chỉ xác nhận chuỗi khớp nguyên vẹn; chuỗi gần giống cần người dùng chọn."""
-    direct = [candidate for candidate in candidates if candidate in known_serials]
+    """Chỉ xác nhận chuỗi khớp nguyên vẹn; chuỗi gần giống cần người dùng chọn.
+    Khớp thêm qua bảng ký tự dễ nhầm (O/0, I/1, B/8, S/5, Z/2, G/6) khi đã có
+    Excel: chuỗi chuẩn hoá trùng đúng một dòng Excel thì tính là khớp chính xác."""
+    known = set(known_serials or ())
+    direct = [candidate for candidate in candidates if candidate in known]
     if direct:
         return deduplicate(direct)
-    # Chuỗi cắt hoặc sửa ký tự chỉ là gợi ý, cần người dùng xác nhận ở giao diện.
-    return []
+    if not known:
+        return []
+    canonical_index = {}
+    ambiguous = set()
+    for serial in known:
+        key = canonical(serial)
+        if key in canonical_index:
+            ambiguous.add(key)
+        else:
+            canonical_index[key] = serial
+    result = []
+    for candidate in candidates:
+        key = canonical(candidate)
+        if key in canonical_index and key not in ambiguous:
+            result.append(canonical_index[key])
+    return deduplicate(result)
 
 
 def deduplicate(lst: list) -> list:

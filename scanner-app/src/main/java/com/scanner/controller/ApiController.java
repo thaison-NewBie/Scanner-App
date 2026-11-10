@@ -1,12 +1,12 @@
 package com.scanner.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.zxing.*;
 import com.google.zxing.client.j2se.BufferedImageLuminanceSource;
 import com.google.zxing.common.HybridBinarizer;
 import com.scanner.service.ExcelService;
 import com.scanner.service.WordService;
 import com.scanner.service.StorageService;
+import com.scanner.service.OcrService;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
@@ -32,6 +32,7 @@ public class ApiController {
     @Autowired private ExcelService excelService;
     @Autowired private WordService wordService;
     @Autowired private StorageService storageService;
+    @Autowired private OcrService ocrService;
 
     // Nơi lưu thuộc phiên trình duyệt hiện tại, không dùng chung giữa các máy.
     private String savePath = "";
@@ -527,46 +528,22 @@ public class ApiController {
     }
 
 
-    // ── Server-side OCR (ZXing + RapidOCR/PaddleOCR via Python) ──────
-    private static final String PYTHON_EXE = resolvePythonExecutable();
-
-    private static String resolvePythonExecutable() {
-        String configured = System.getenv("SCANNER_PYTHON");
-        if (configured != null && !configured.isBlank()) return configured;
-        for (String relative : List.of(".venv/Scripts/python.exe", ".venv/bin/python")) {
-            Path executable = Paths.get(System.getProperty("user.dir"), relative);
-            if (Files.isRegularFile(executable)) return executable.toString();
-        }
-        return "python";
-    }
-    private static final String OCR_SCRIPT =
-        Paths.get(System.getProperty("user.dir"), "ocr.py").toString();
-
-    private static final ObjectMapper JSON = new ObjectMapper();
-
-    // Timeout tối đa cho Python OCR (ms)
-    private static final long OCR_TIMEOUT_MS = 60_000;
-
+    // ── Server-side OCR (ZXing trong Java + ocr_server/ocr.py qua OcrService) ──
     /**
      * /api/ocr — Chiến lược 3 bước tối ưu tốc độ:
      *   Bước 1 (Java, ~30ms): ZXing chỉ fast-exit khi khớp chính xác Excel
-     *   Bước 2: Giữ nguyên ảnh/EXIF và truyền danh sách SN Excel sang Python
-     *   Bước 3: RapidOCR/PaddleOCR quét vùng trung tâm ảnh slot 2, lọc chuỗi
-     *           có hình dạng SN; Python tự dừng
-     *           vòng biến thể sau 25s, Java giữ timeout 60s làm lớp an toàn
+     *   Bước 2: OcrService gọi ocr_server.py — daemon nạp sẵn model, không
+     *           phải trả phí nạp model mỗi lần quét
+     *   Bước 3: daemon không dùng được thì fallback spawn ocr.py như cũ
      */
     @PostMapping("/ocr")
     public ResponseEntity<Map<String, Object>> performOcr(
             @RequestParam("image") MultipartFile image) {
-        Path tempImage = null;
-        Path tempSerials = null;
         try {
             byte[] rawBytes = image.getBytes();
             List<String> knownSerials = excelService.getAllSN("");
 
             // ── BƯỚC 1: ZXing chỉ được phép dừng sớm khi khớp Excel ──────
-            // Nếu chưa có Excel, luôn chuyển sang ocr.py để quét vùng giữa
-            // slot 2; tránh trả về barcode/chuỗi ngoài vùng SN.
             List<String> barcodeResults = knownSerials.isEmpty()
                 ? List.of()
                 : scanBarcodesFromBytes(rawBytes);
@@ -581,88 +558,8 @@ public class ApiController {
                 ));
             }
 
-            // ── BƯỚC 2: Lưu ảnh gốc cho OCR ─────────────
-            tempImage = Files.createTempFile("ocr_", ".jpg");
-            // Giữ EXIF và chi tiết ảnh; Python xử lý hướng và kích thước một lần.
-            Files.write(tempImage, rawBytes);
-            tempSerials = Files.createTempFile("ocr_serials_", ".json");
-            Files.writeString(tempSerials, JSON.writeValueAsString(knownSerials), StandardCharsets.UTF_8);
-
-            // ── BƯỚC 3: Python OCR với timeout ─────────────────────
-            ProcessBuilder pb = new ProcessBuilder(
-                PYTHON_EXE, OCR_SCRIPT,
-                tempImage.toAbsolutePath().toString(), tempSerials.toAbsolutePath().toString()
-            );
-            pb.redirectErrorStream(false);
-            Process process = pb.start();
-
-            // Đọc stdout + stderr song song để tránh deadlock
-            byte[] stdoutBytes, stderrBytes;
-            try (var is = process.getInputStream();
-                 var es = process.getErrorStream()) {
-                // CompletableFuture đọc song song hai stream
-                var stdoutFut = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-                    try { return is.readAllBytes(); }
-                    catch (Exception ex) { return new byte[0]; }
-                });
-                var stderrFut = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-                    try { return es.readAllBytes(); }
-                    catch (Exception ex) { return new byte[0]; }
-                });
-                boolean finished = process.waitFor(
-                    OCR_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
-                if (!finished) {
-                    process.destroyForcibly();
-                    return ResponseEntity.ok(Map.of(
-                        "success",    false,
-                        "candidates", List.of(),
-                        "method",     "timeout",
-                        "error",      "OCR quá thời gian " + (OCR_TIMEOUT_MS/1000) + "s"
-                    ));
-                }
-                stdoutBytes = stdoutFut.join();
-                stderrBytes = stderrFut.join();
-            }
-
-            String stdout = new String(stdoutBytes, StandardCharsets.UTF_8).trim();
-            String stderr = new String(stderrBytes, StandardCharsets.UTF_8).trim();
-            int exitCode  = process.exitValue();
-
-            if (!stderr.isEmpty())
-                System.err.println("[OCR-PY] " + stderr);
-
-            if (exitCode != 0) {
-                return ResponseEntity.internalServerError().body(Map.of(
-                    "success", false,
-                    "error",   "ocr.py thoát với mã lỗi " + exitCode
-                ));
-            }
-
-            // Parse JSON từ ocr.py
-            List<String> candidates = new ArrayList<>();
-            String method = "ocr";
-            try {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> pyResult = JSON.readValue(stdout, Map.class);
-                if (pyResult.get("error") != null) {
-                    return ResponseEntity.ok(Map.of("success", false, "candidates", List.of(),
-                        "error", pyResult.get("error")));
-                }
-                @SuppressWarnings("unchecked")
-                List<String> pyCandidates = (List<String>) pyResult.getOrDefault("candidates", List.of());
-                candidates.addAll(pyCandidates);
-                method = (String) pyResult.getOrDefault("method", "ocr");
-            } catch (Exception parseEx) {
-                return ResponseEntity.internalServerError().body(Map.of(
-                    "success", false, "error", "OCR trả về dữ liệu không hợp lệ"));
-            }
-
-            return ResponseEntity.ok(Map.of(
-                "success",    true,
-                "candidates", candidates,
-                "method",     method,
-                "rawText",    stdout
-            ));
+            // ── BƯỚC 2 + 3: Python OCR (daemon trước, CLI fallback sau) ──
+            return ResponseEntity.ok(ocrService.ocr(rawBytes, knownSerials));
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -670,59 +567,6 @@ public class ApiController {
                 "success", false,
                 "error",   e.getMessage()
             ));
-        } finally {
-            if (tempImage != null)
-                try { Files.deleteIfExists(tempImage); } catch (Exception ignored) {}
-            if (tempSerials != null)
-                try { Files.deleteIfExists(tempSerials); } catch (Exception ignored) {}
-        }
-    }
-
-    /**
-     * Preprocess ảnh trong Java trước khi gửi sang Python:
-     * - Resize về tối đa 1800px để giảm thời gian OCR
-     * - Lưu dưới dạng JPEG chất lượng cao
-     */
-    private void preprocessAndSave(byte[] rawBytes, Path dest) throws Exception {
-        try (var bais = new java.io.ByteArrayInputStream(rawBytes)) {
-            BufferedImage bi = ImageIO.read(bais);
-            if (bi == null) {
-                // Fallback: lưu nguyên bytes
-                Files.write(dest, rawBytes);
-                return;
-            }
-
-            // Resize nếu ảnh quá lớn
-            final int MAX_DIM = 1800;
-            int w = bi.getWidth(), h = bi.getHeight();
-            if (Math.max(w, h) > MAX_DIM) {
-                double ratio = (double) MAX_DIM / Math.max(w, h);
-                int nw = (int)(w * ratio), nh = (int)(h * ratio);
-                java.awt.image.BufferedImage scaled = new java.awt.image.BufferedImage(
-                    nw, nh, java.awt.image.BufferedImage.TYPE_INT_RGB);
-                java.awt.Graphics2D g2 = scaled.createGraphics();
-                g2.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
-                    java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-                g2.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING,
-                    java.awt.RenderingHints.VALUE_RENDER_QUALITY);
-                g2.drawImage(bi, 0, 0, nw, nh, null);
-                g2.dispose();
-                bi = scaled;
-            }
-
-            // Lưu JPEG chất lượng 92%
-            var jpegParams = ImageIO.getImageWritersByFormatName("jpeg").next();
-            var jpegWriteParam = jpegParams.getDefaultWriteParam();
-            jpegWriteParam.setCompressionMode(
-                javax.imageio.ImageWriteParam.MODE_EXPLICIT);
-            jpegWriteParam.setCompressionQuality(0.92f);
-            try (var ios = ImageIO.createImageOutputStream(dest.toFile())) {
-                jpegParams.setOutput(ios);
-                jpegParams.write(null,
-                    new javax.imageio.IIOImage(bi, null, null), jpegWriteParam);
-            } finally {
-                jpegParams.dispose();
-            }
         }
     }
 

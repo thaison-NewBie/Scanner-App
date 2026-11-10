@@ -43,12 +43,12 @@ class ScanTests(unittest.TestCase):
         cropped = ocr.crop_serial_center(Image.new('RGB', (1000, 800), 'white'))
         self.assertEqual(cropped.size, (840, 416))
 
-    def test_portrait_scan_includes_rotated_variants(self):
+    def test_portrait_scan_includes_rotated_variants_last(self):
         variants = list(ocr.build_image_variants(Image.new('RGB', (80, 140), 'white')))
         names = [name for name, _ in variants]
-        self.assertEqual(names[:3], ['enhanced', 'rotate90', 'rotate270'])
-        self.assertEqual(variants[1][1].size, (140, 80))
-        self.assertNotIn('zoom', names)  # giữ thời gian ổn định trên ảnh dọc
+        self.assertEqual(names[:2], ['enhanced', 'zoom'])
+        self.assertEqual(names[-2:], ['rotate90', 'rotate270'])
+        self.assertEqual(variants[1][1].size, (120, 210))
 
     def test_exact_match_before_substring(self):
         self.assertEqual(ocr.exact_matches(['AB12345678'], {'AB12345678', '12345678'}), ['AB12345678'])
@@ -56,6 +56,29 @@ class ScanTests(unittest.TestCase):
     def test_substring_matching_does_not_invent_fuzzy_match(self):
         self.assertEqual(ocr.exact_matches(['XXAB12345678YY'], {'AB12345678'}), [])
         self.assertEqual(ocr.exact_matches(['AB12345679'], {'AB12345678'}), [])
+
+    def test_short_alphanumeric_serial_is_accepted(self):
+        # SN ngắn 6 ký tự, ít chữ số vẫn phải hiện ra cho người dùng xác nhận.
+        self.assertIn('AB12CD', ocr.extract_serials([('AB12CD', 0.9)]))
+
+    def test_confusion_characters_match_excel_serials(self):
+        # O đọc nhầm thành 0, G thành 6... vẫn tự xác nhận đúng dòng Excel.
+        self.assertEqual(ocr.exact_matches(['ABO1234567'], {'AB01234567'}), ['AB01234567'])
+        self.assertEqual(ocr.exact_matches(['ABO12345G'], {'AB0123456'}), ['AB0123456'])
+
+    def test_confusion_not_returned_when_two_excel_rows_normalize_equal(self):
+        # Hai dòng Excel cùng dạng chuẩn hoá → không đoán bừa.
+        self.assertEqual(ocr.exact_matches(['ABO12345G'], {'AB0123456', 'ABO123456'}), [])
+
+    def test_scan_image_falls_back_to_full_image_when_center_has_no_serial(self):
+        pil_img = Image.new('RGB', (120, 120), 'white')
+        with patch.object(ocr, 'OCR_BACKEND', 'rapid'), \
+             patch.object(ocr, 'scan_barcode', return_value=[]), \
+             patch.object(ocr, 'run_ocr_on_pil', side_effect=[[], [('AB12345678', 0.9)]]), \
+             patch.object(ocr, 'build_image_variants', return_value=iter([])):
+            output = ocr.scan_image(pil_img, {'AB12345678'})
+        self.assertEqual(output['method'], 'ocr_full_exact')
+        self.assertEqual(output['candidates'], ['AB12345678'])
 
     def test_unmatched_barcode_and_first_ocr_do_not_stop_deep_scan(self):
         with tempfile.TemporaryDirectory() as directory:

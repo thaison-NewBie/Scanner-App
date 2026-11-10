@@ -39,6 +39,8 @@ class ServerExcelPickerTest {
         properties.add("scanner.storage.restricted", () -> true);
         properties.add("scanner.storage.images-root", images::toString);
         properties.add("scanner.storage.reports-root", reports::toString);
+        // Không spawn daemon ocr_server.py khi chạy test.
+        properties.add("scanner.ocr.server-enabled", () -> false);
     }
 
     // Thư mục và file mẫu phải có trước khi Spring nạp context, nên tạo ở static
