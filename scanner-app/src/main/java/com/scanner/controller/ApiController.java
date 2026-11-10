@@ -570,6 +570,12 @@ public class ApiController {
         }
     }
 
+    /** Chẩn đoán OCR: mở bằng trình duyệt trên máy chủ để xem daemon có chạy không. */
+    @GetMapping("/ocr/diagnose")
+    public Map<String, Object> ocrDiagnose() {
+        return ocrService.diagnose();
+    }
+
     /**
      * ZXing nâng cao: Quét barcode từ raw bytes không cần lưu file.
      * Chiến lược:

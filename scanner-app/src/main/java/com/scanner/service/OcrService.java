@@ -68,11 +68,47 @@ public class OcrService {
     @org.springframework.context.event.EventListener(
         org.springframework.boot.context.event.ApplicationReadyEvent.class)
     public void prewarm() {
-        if (serverEnabled && Files.exists(ocrServerScript)) {
-            Thread thread = new Thread(this::ensureServerReady, "ocr-server-prewarm");
-            thread.setDaemon(true);
-            thread.start();
+        if (!serverEnabled) {
+            System.err.println("[OCR-SERVER] Tắt bằng scanner.ocr.server-enabled=false");
+            return;
         }
+        if (!Files.exists(ocrServerScript)) {
+            System.err.println("[OCR-SERVER] Thiếu ocr_server.py tại " + ocrServerScript);
+            return;
+        }
+        Thread thread = new Thread(this::ensureServerReady, "ocr-server-prewarm");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /** Thông tin chẩn đoán cho /api/ocr/diagnose (mở bằng trình duyệt trên máy chủ). */
+    public Map<String, Object> diagnose() {
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("serverEnabled", serverEnabled);
+        info.put("serverPort", serverPort);
+        info.put("userDir", System.getProperty("user.dir"));
+        info.put("pythonExe", pythonExe);
+        info.put("pythonExists", Files.exists(Paths.get(pythonExe)));
+        info.put("ocrServerScript", ocrServerScript.toString());
+        info.put("ocrServerScriptExists", Files.exists(ocrServerScript));
+        info.put("ocrScriptExists", Files.exists(ocrScript));
+        Process process = serverProcess;
+        info.put("daemonAlive", process != null && process.isAlive());
+        info.put("healthStatus", healthStatus());
+        info.put("lastHealthError", lastHealthError);
+        info.put("cooldownMs", Math.max(0, serverCooldownUntil - System.currentTimeMillis()));
+        info.put("daemonLog", ocrServerLog.toString());
+        info.put("daemonLogExists", Files.exists(ocrServerLog));
+        if (Files.exists(ocrServerLog)) {
+            try {
+                List<String> lines = Files.readAllLines(ocrServerLog, StandardCharsets.UTF_8);
+                int from = Math.max(0, lines.size() - 25);
+                info.put("daemonLogTail", lines.subList(from, lines.size()));
+            } catch (Exception e) {
+                info.put("daemonLogTail", List.of("Không đọc được: " + e.getMessage()));
+            }
+        }
+        return info;
     }
 
     private static String resolvePythonExecutable() {
