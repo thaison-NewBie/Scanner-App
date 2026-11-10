@@ -29,7 +29,9 @@ Chỉ khởi động sau khi build thành công:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start-nas.ps1
 ```
 
-Script dùng `target-nas/scanner-app-1.0.0.jar`, đặt `SCANNER_PYTHON` tới `.venv/Scripts/python.exe` (hoặc đường dẫn truyền qua `-PythonExe` khi dùng lại venv của bản cài cũ), chạy nền và ghi log tại thư mục project. Mặc định chỉ nghe `127.0.0.1`; thêm `-BindAddress 0.0.0.0` khi cần điện thoại truy cập. Máy phát triển này có Maven tại `D:\WebApp\workspace\maven\apache-maven-3.9.9\bin\mvn.cmd` nếu chưa có `mvn` trên PATH.
+Script dùng `target-nas/scanner-app-1.0.0.jar`, đặt `SCANNER_PYTHON` tới `.venv/Scripts/python.exe` (hoặc đường dẫn truyền qua `-PythonExe` khi dùng lại venv của bản cài cũ), chạy nền và ghi log tại thư mục project. Mặc định chỉ nghe `127.0.0.1`; thêm `-Lan` khi cần điện thoại truy cập. Máy phát triển này có Maven tại `D:\WebApp\workspace\maven\apache-maven-3.9.9\bin\mvn.cmd` nếu chưa có `mvn` trên PATH.
+
+Thứ tự cập nhật bắt buộc: **stop → pull → xoá `target-nas` → build → start**. Không xoá `target-nas` sau khi build, nếu không script sẽ báo thiếu jar.
 
 Mở `http://localhost:18080/`. Dừng đúng tiến trình do script tạo bằng:
 
@@ -39,11 +41,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\stop-nas.ps1
 
 ## Kết nối điện thoại và NAS
 
-Cấu hình mặc định chỉ lắng nghe `127.0.0.1`. Để điện thoại cùng Wi-Fi truy cập, chạy app với `-BindAddress 0.0.0.0`:
+Cấu hình mặc định chỉ lắng nghe `127.0.0.1`. Để điện thoại cùng Wi-Fi truy cập, thêm switch `-Lan` (ngắn, tránh phải gõ địa chỉ IP):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start-nas.ps1 -BindAddress 0.0.0.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start-nas.ps1 -Lan
 ```
+
+> Khi copy lệnh từ chat/web, dấu `-` đôi khi bị thay bằng ký tự Unicode trông giống hệt
+> (non-breaking hyphen). PowerShell sẽ không nhận ra tham số và báo lỗi kiểu
+> `Cannot convert value "BindAddress" to type "System.Int32"`. Nếu gặp lỗi này, gõ lại
+> dấu `-` bằng bàn phím hoặc dùng `-Lan` cho ngắn.
 
 Lần đầu mở LAN cần thêm rule firewall (PowerShell Run as Administrator), giới hạn trong dải mạng nội bộ:
 
