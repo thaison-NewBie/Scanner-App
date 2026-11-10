@@ -251,6 +251,24 @@ def extract_serials(raw_candidates: list, known_serials=None) -> list:
     return results
 
 
+def extract_s_label_serials(raw_candidates: list, known_serials=None) -> list:
+    """Ưu tiên dòng '(S)...' trên tem — đó mới là serial number thật.
+
+    Tem Nokia/ABIO có dạng: (1P)475266B.102 / (S)DH252145717 / (18V)LENOK...
+    Chỉ dòng (S) là SN cần quét; các dòng khác chỉ là model/ngày.
+    """
+    results = []
+    for text, _ in raw_candidates:
+        upper = str(text or '').upper()
+        match = re.search(r'\(?S\)?[\s:.\-=]*([A-Z0-9]{6,})', upper)
+        if not match:
+            continue
+        for candidate in expand_serial_label_prefix(match.group(1), known_serials):
+            if looks_like_serial(candidate, known_serials):
+                results.append(candidate)
+    return results
+
+
 # ── TIỀN XỬ LÝ ẢNH MỜ ────────────────────────────────────────────────────────
 
 def enhance_for_ocr(pil_img: Image.Image) -> Image.Image:
@@ -314,29 +332,123 @@ def build_image_variants(pil_img: Image.Image):
         yield 'rotate270', pil_img.rotate(270, expand=True)
 
 
+def sticker_crops(pil_img: Image.Image, max_crops: int = 3):
+    """Cắt tối đa vài vùng ứng viên chứa tem, xếp theo mật độ cạnh (khả năng có chữ).
+
+    Tem SN thường là nhãn nhỏ dán trên nền kim loại; OCR toàn ảnh dễ bỏ sót
+    dòng chữ nhỏ. Ứng viên gồm vùng sáng (nhãn trắng) và lưới 3x3 chồng lấn
+    (phủ mọi vị trí tem, kể cả ảnh bị xoay). Mỗi vùng được phóng to trước khi
+    OCR để chữ đủ lớn cho rec.
+    """
+    if not HAS_CV2:
+        return []
+    width, height = pil_img.size
+    if min(width, height) < 300:
+        return []
+    arr = np.array(pil_img.convert('RGB'))
+    gray = cv2.GaussianBlur(cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY), (3, 3), 0)
+    edges = cv2.Canny(gray, 60, 160)
+    regions = []
+
+    def add_region(left, top, right, bottom):
+        left, top = max(0, left), max(0, top)
+        right, bottom = min(width, right), min(height, bottom)
+        cw, ch = right - left, bottom - top
+        if cw < 100 or ch < 80:          # bỏ dải mỏng (thanh ray, viền máy)
+            return
+        aspect = cw / float(ch)
+        if not (0.3 <= aspect <= 8):     # tem là khối chữ nhật, không phải dải
+            return
+        regions.append((float(edges[top:bottom, left:right].mean()), left, top, cw, ch))
+
+    # (a) Vùng sáng: nhãn trắng trên nền kim loại.
+    for lower in (200, 180):
+        mask = cv2.inRange(gray, lower, 255)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                                np.ones((7, 7), np.uint8), iterations=2)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x, y, cw, ch = cv2.boundingRect(contour)
+            ratio = (cw * ch) / float(width * height)
+            if not (0.002 <= ratio <= 0.35) or cw < 80 or ch < 40:
+                continue
+            if gray[y:y + ch, x:x + cw].mean() < 180:
+                continue
+            add_region(x - int(cw * 0.10), y - int(ch * 0.10),
+                       x + cw + int(cw * 0.10), y + ch + int(ch * 0.10))
+
+    # (b) Lưới 3x3 chồng lấn: bảo đảm phủ mọi vị trí tem (kể cả ảnh xoay).
+    tile_w, tile_h = int(width * 0.55), int(height * 0.55)
+    step_x, step_y = max(1, int(width * 0.40)), max(1, int(height * 0.40))
+    ty = 0
+    while True:
+        tx = 0
+        while True:
+            add_region(tx, ty, tx + tile_w, ty + tile_h)
+            if tx + tile_w >= width:
+                break
+            tx += step_x
+        if ty + tile_h >= height:
+            break
+        ty += step_y
+
+    regions.sort(key=lambda item: -item[0])
+    crops = []
+    chosen = []
+    for density, left, top, cw, ch in regions:
+        if density < 0.02:  # gần như không có cạnh → không có chữ
+            continue
+        if any(abs(left - l2) < width * 0.10 and abs(top - t2) < height * 0.10
+               for l2, t2, _, _ in chosen):
+            continue
+        crop = pil_img.crop((left, top, left + cw, top + ch))
+        cw2, ch2 = crop.size
+        scale = min(1100.0 / max(1, min(cw2, ch2)), 1200.0 / max(cw2, ch2))
+        if scale > 1.02:
+            crop = crop.resize((int(cw2 * scale), int(ch2 * scale)), Image.LANCZOS)
+        crops.append(crop)
+        chosen.append((left, top, cw, ch))
+        if len(crops) >= max_crops:
+            break
+    return crops
+
+
 # ── LÕI QUÉT (dùng chung cho CLI và ocr_server) ──────────────────────────────
 
 def scan_image(pil_original: Image.Image, known_serials=None, deadline_seconds: float = DEADLINE_SECONDS):
     """
     Trả dict {candidates, method, error, elapsed_ms}. Không in ra stdout.
 
-    Hai tầng để bỏ cảnh chờ 50s:
-    1) Lượt nhanh (vùng giữa, det 736): khớp Excel → dừng; đọc được chữ nhưng
-       chưa khớp → TRẢ GỢI Ý NGAY cho người dùng chọn (không quét sâu).
-    2) Quét sâu (biến thể + cả ảnh) chỉ chạy khi lượt nhanh không đọc được gì.
-    Khớp với Excel qua exact + bảng ký tự nhầm lẫn + đoán chuỗi thiếu/lỗi
-    (substring/Levenshtein), chỉ khi đoán DUY NHẤT một dòng Excel.
+    Thứ tự nhanh → chậm:
+    1) Barcode/QR toàn ảnh + vùng giữa.
+    2) OCR vùng giữa det 736; khớp Excel → dừng.
+    3) Cắt vùng tem sáng rồi phóng to OCR (tem SN nhỏ trong ảnh lớn),
+       ưu tiên dòng "(S)...".
+    4) Chỉ khi chưa đọc được gì mới quét sâu cả ảnh (biến thể + xoay).
+    Khớp Excel: exact, bảng ký tự nhầm lẫn, và đoán chuỗi thiếu/lỗi
+    (substring/Levenshtein) khi DUY NHẤT một dòng Excel.
     """
     start = time.monotonic()
     known_serials = {str(s).strip().upper() for s in (known_serials or ()) if str(s).strip()}
     deadline = start + deadline_seconds
-
-    # ── GIAI ĐOẠN 1: Barcode (nhanh, chính xác nhất) ────────────────────
     center = crop_serial_center(pil_original)
+
+    def resolve(serials, method_prefix):
+        matched = exact_matches(serials, known_serials)
+        if matched:
+            return result(matched, f"{method_prefix}_exact", start)
+        guessed = guess_serials(serials, known_serials)
+        if guessed:
+            return result(guessed, f"{method_prefix}_guess", start)
+        return None
+
+    # ── 1) Barcode/QR (nhanh, chính xác nhất) ──────────────────────────
     barcode_results = deduplicate(scan_barcode(pil_original) + scan_barcode(center))
-    matched = exact_matches(barcode_results, known_serials)
-    if matched or (barcode_results and not known_serials):
-        return result(matched or barcode_results, "barcode", start)
+    outcome = resolve(barcode_results, "barcode")
+    if outcome:
+        return outcome
+    if barcode_results and not known_serials:
+        return result(barcode_results, "barcode", start)
 
     if OCR_BACKEND is None:
         try:
@@ -348,39 +460,55 @@ def scan_image(pil_original: Image.Image, known_serials=None, deadline_seconds: 
                     "elapsed_ms": int((time.monotonic() - start) * 1000)}
 
     all_serials = list(barcode_results)
+    text_read = False   # chỉ đếm chữ do OCR đọc, không tính barcode không khớp
 
-    # ── LƯỢT NHANH: vùng giữa, det 736 ─────────────────────────────────
+    # ── 2) OCR nhanh vùng giữa ────────────────────────────────────────
     raw = run_ocr_on_pil(center, FAST_DET_LIMIT)
-    serials = extract_serials(raw, known_serials)
-    matched = exact_matches(serials, known_serials)
-    if matched:
-        return result(matched, "ocr_center_exact", start)
-    guessed = guess_serials(serials, known_serials)
-    if guessed:
-        return result(guessed, "ocr_center_guess", start)
+    serials = deduplicate(extract_s_label_serials(raw, known_serials)
+                          + extract_serials(raw, known_serials))
+    outcome = resolve(serials, "ocr_center")
+    if outcome:
+        return outcome
     all_serials.extend(serials)
-    # Đọc được chữ nhưng không khớp Excel → trả gợi ý để người dùng chọn,
-    # KHÔNG quét sâu (đây là nguyên nhân trước đây mỗi lần quét mất 50s+).
-    if serials:
-        return result(deduplicate(all_serials), "ocr_center_suggestions", start)
+    text_read = text_read or bool(serials)
 
-    # ── QUÉT SÂU: chỉ khi lượt nhanh không đọc được gì ──────────────────
+    # ── 3) Tem nhỏ: cắt vùng sáng rồi phóng to OCR ────────────────────
+    for index, crop in enumerate(sticker_crops(pil_original), 1):
+        if time.monotonic() >= deadline:
+            break
+        qr = scan_barcode(crop)
+        outcome = resolve(qr, f"qr_sticker{index}")
+        if outcome:
+            return outcome
+        raw = run_ocr_on_pil(crop, FAST_DET_LIMIT)
+        serials = deduplicate(extract_s_label_serials(raw, known_serials)
+                              + extract_serials(raw, known_serials))
+        outcome = resolve(serials, f"ocr_sticker{index}")
+        if outcome:
+            return outcome
+        all_serials.extend(qr + serials)
+        text_read = text_read or bool(serials)
+
+    # Đọc được chữ nhưng không khớp Excel → trả gợi ý, KHÔNG quét sâu.
+    if text_read:
+        return result(deduplicate(all_serials), "ocr_suggestions", start)
+
+    # ── 4) Quét sâu: chỉ khi chưa đọc được gì ─────────────────────────
     for name, img, det_limit in deep_passes(center, pil_original):
         if time.monotonic() >= deadline:
             break
         raw = run_ocr_on_pil(img, det_limit)
-        serials = extract_serials(raw, known_serials)
-        matched = exact_matches(serials, known_serials)
-        if matched:
-            return result(matched, f"ocr_{name}_exact", start)
-        guessed = guess_serials(serials, known_serials)
-        if guessed:
-            return result(guessed, f"ocr_{name}_guess", start)
+        serials = deduplicate(extract_s_label_serials(raw, known_serials)
+                              + extract_serials(raw, known_serials))
+        outcome = resolve(serials, f"ocr_{name}")
+        if outcome:
+            return outcome
         all_serials.extend(serials)
         if serials:
-            break  # có chữ rồi → trả gợi ý, không quét tiếp
+            break
 
-    return result(deduplicate(all_serials), 'ocr_deep' if all_serials else 'ocr_no_result', start)
+    return result(deduplicate(all_serials),
+                  'ocr_deep' if all_serials else 'ocr_no_result', start)
 
 
 def result(candidates, method, start):

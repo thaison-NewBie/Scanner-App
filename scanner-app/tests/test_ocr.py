@@ -74,9 +74,30 @@ class ScanTests(unittest.TestCase):
              patch.object(ocr, 'run_ocr_on_pil', return_value=[('AB12345678', 0.9)]), \
              patch.object(ocr, 'build_image_variants') as variants:
             output = ocr.scan_image(pil_img, {'ZZ999999'})
-        self.assertEqual(output['method'], 'ocr_center_suggestions')
+        self.assertEqual(output['method'], 'ocr_suggestions')
         self.assertEqual(output['candidates'], ['AB12345678'])
         variants.assert_not_called()
+
+    def test_extract_s_label_serials_prefers_serial_line(self):
+        self.assertEqual(
+            ocr.extract_s_label_serials([('(S)DH252145717', 0.9), ('(1P)475266B.102', 0.9)]),
+            ['DH252145717'])
+
+    def test_scan_image_uses_sticker_crop_before_suggestions(self):
+        # Vùng giữa đọc nhầm số chứng nhận, nhưng tem phóng to đọc đúng dòng (S).
+        pil_img = Image.new('RGB', (400, 300), 'white')
+        with patch.object(ocr, 'OCR_BACKEND', 'rapid'), \
+             patch.object(ocr, 'scan_barcode', return_value=[]), \
+             patch.object(ocr, 'run_ocr_on_pil', side_effect=[
+                 [('MTCTE427300800', 0.9)],
+                 [('(S)DH252145717', 0.9)]]), \
+             patch.object(ocr, 'sticker_crops', return_value=[Image.new('RGB', (600, 300), 'white')]):
+            output = ocr.scan_image(pil_img, {'DH252145717'})
+        self.assertEqual(output['method'], 'ocr_sticker1_exact')
+        self.assertEqual(output['candidates'], ['DH252145717'])
+
+    def test_sticker_crops_skips_tiny_images(self):
+        self.assertEqual(ocr.sticker_crops(Image.new('RGB', (120, 120), 'white')), [])
 
     def test_exact_match_before_substring(self):
         self.assertEqual(ocr.exact_matches(['AB12345678'], {'AB12345678', '12345678'}), ['AB12345678'])

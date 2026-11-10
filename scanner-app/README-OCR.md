@@ -17,11 +17,15 @@ thay vì spawn `ocr.py` từng lần:
 Chiến lược hai tầng trong `ocr.py`:
 
 - Lượt quét đầu (vùng giữa ảnh slot 2) dùng det **736** để ảnh rõ khớp nhanh.
+- Tem SN thật thường là dòng `(S)...` trên nhãn trắng nhỏ (Nokia/ABIO), nằm
+  lệch và nhỏ so với khung ảnh. Nếu lượt giữa chưa khớp, OCR cắt các vùng
+  ứng viên (nhãn sáng + lưới 3x3 chồng lấn), xếp theo mật độ cạnh (vùng có
+  chữ), phóng to rồi quét lại; dòng `(S)` được ưu tiên lên đầu danh sách.
 - Đọc được chữ nhưng chưa khớp Excel → **trả gợi ý ngay**, không quét sâu
   (quét sâu là nguyên nhân trước đây mỗi lần quét mất 50s+).
 - Quét sâu (det **960**, chỉnh qua `SCANNER_OCR_DET_LIMIT`) chỉ chạy khi lượt
-  đầu không đọc được gì, gồm phóng to 2x, CLAHE, nhị phân hoá thích ứng
-  (tem nhòe/rách), xoay 90/270 và fallback quét cả ảnh khi tem lệch giữa.
+  đầu và các vùng tem đều không đọc được gì, gồm phóng to 2x, CLAHE, nhị
+  phân hoá thích ứng (tem nhòe/rách), xoay 90/270 và quét cả ảnh gốc.
 - **Đoán SN từ Excel** khi tem thiếu nửa/nhòe: chuỗi đọc được chỉ cần là
   chuỗi con (hoặc sai 1-2 ký tự theo Levenshtein, hoặc nhầm O/0, I/1, B/8,
   S/5, Z/2, G/6) của **đúng một** dòng Excel thì tự xác nhận; mơ hồ thì để
