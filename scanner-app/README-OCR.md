@@ -35,6 +35,19 @@ Chẩn đoán: Java ghi `[OCR] via=... method=... ms=...` vào log app; chạy
 `$env:SCANNER_OCR_DEBUG='1'` trước `python ocr.py ảnh serials.json` sẽ in
 từng dòng đọc được kèm điểm tin cậy ra stderr để chỉnh ngưỡng/lọc.
 
+## Sự cố đã biết: onnxruntime crash `0xC0000005`
+
+Trên CPU đời cũ (ví dụ Intel Haswell i5-4440), `onnxruntime` từ 1.20 trở lên
+có thể crash `0xC0000005` (access violation) ngay khi khởi tạo model: lệnh
+`python -c "from rapidocr_onnxruntime import RapidOCR; RapidOCR()"` thoát ngay,
+không in traceback, mã thoát `-1073741819`; daemon OCR vì thế chết và mọi lần
+quét rơi về chế độ `via=cli` rất chậm. `requirements-ocr.txt` đã ghim
+`onnxruntime>=1.17,<1.20`; nếu vẫn gặp, cài đúng bản đã kiểm chứng:
+
+```powershell
+.venv/Scripts/python.exe -m pip install --force-reinstall "onnxruntime==1.19.2"
+```
+
 ## Cài đặt
 
 ```powershell

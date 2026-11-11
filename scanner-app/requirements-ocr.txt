@@ -1,5 +1,9 @@
 numpy>=1.26,<3
 Pillow>=10,<13
 rapidocr-onnxruntime>=1.4,<2
+# Ghim onnxruntime: bản >=1.20 crash 0xC0000005 (access violation) khi khởi tạo
+# model trên CPU đời cũ (ví dụ Intel Haswell i5-4440 của máy thử nghiệm).
+# 1.19.2 đã được kiểm chứng chạy ổn trên cả Windows cũ và mới.
+onnxruntime>=1.17,<1.20
 pyzbar>=0.1.9,<0.2
 pillow-heif>=0.18,<2
