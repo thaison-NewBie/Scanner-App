@@ -35,7 +35,10 @@ public class ApiController {
     @Autowired private OcrService ocrService;
 
     // Nơi lưu thuộc phiên trình duyệt hiện tại, không dùng chung giữa các máy.
-    private String savePath = "";
+    // tsc/ssc dùng cho chế độ TSC+SSC; single dùng cho Cháy Nổ và "Không sửa được".
+    private String tscSavePath = "";
+    private String sscSavePath = "";
+    private String singleSavePath = "";
 
     @GetMapping("/storage/config")
     public Map<String, Object> storageConfig() {
@@ -48,14 +51,18 @@ public class ApiController {
         return ResponseEntity.ok(Map.of(
             "status", "OK",
             "snLoaded", excelService.getLoadedCount(),
-            "savePath", savePath
+            "savePath", singleSavePath,
+            "tscSavePath", tscSavePath,
+            "sscSavePath", sscSavePath
         ));
     }
 
     @PostMapping("/session/reset")
     public ResponseEntity<Map<String, Object>> resetSession() {
         excelService.clear();
-        savePath = "";
+        tscSavePath = "";
+        sscSavePath = "";
+        singleSavePath = "";
         return ResponseEntity.ok(Map.of("success", true, "message", "Đã reset phiên làm việc"));
     }
 
@@ -73,26 +80,36 @@ public class ApiController {
     }
 
     // ── Set Save Path ─────────────────────────────────────────────
+    // type: "tsc" | "ssc" | "single" (mặc định "single" để tương thích cũ)
     @PostMapping("/config/save-path")
     public ResponseEntity<Map<String, Object>> setSavePath(
             @RequestBody Map<String, String> body) {
         String path = body.getOrDefault("path", "").trim();
+        String type = body.getOrDefault("type", "single").trim();
         if (path.isEmpty()) {
-            savePath = "";
+            assignSavePath(type, "");
             return ResponseEntity.ok(Map.of("success", true, "message", "Đã xóa nơi lưu file"));
         }
         try {
             Path p = storageService.saveDirectory(path);
-            savePath = p.toString();
+            assignSavePath(type, p.toString());
             return ResponseEntity.ok(Map.of("success", true,
                 "message", "Đã chọn: " + path,
-                "path", savePath));
+                "path", p.toString(), "type", type));
         } catch (InvalidPathException e) {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false, "error", "Đường dẫn không hợp lệ: " + e.getMessage()));
         } catch (IOException e) {
             return ResponseEntity.badRequest().body(Map.of(
                 "success", false, "error", "Không chọn được nơi lưu: " + e.getMessage()));
+        }
+    }
+
+    private void assignSavePath(String type, String value) {
+        switch (type) {
+            case "tsc" -> tscSavePath = value;
+            case "ssc" -> sscSavePath = value;
+            default -> singleSavePath = value;
         }
     }
 
@@ -442,6 +459,11 @@ public class ApiController {
     }
 
     // ── Generate Word ──────────────────────────────────────────────
+    // reportType:
+    //   "TSC_SSC"  → 1 nút tạo 2 file (TrcSC vào thư mục TSC, SauSC vào thư mục SSC)
+    //   "CHAY_NO"  → 1 file ChayNo (nơi lưu đơn)
+    //   "SAU_SCC"  → "Không sửa được": 1 file SauSC (nơi lưu đơn)
+    //   "TRUOC_SCC"→ giữ lại cho tương thích/test (1 file TrcSC, nơi lưu đơn)
     @PostMapping("/report/generate")
     public ResponseEntity<?> generateReport(
             @RequestParam("deviceName")   String deviceName,
@@ -453,34 +475,85 @@ public class ApiController {
             @RequestParam(value = "image1", required = false) MultipartFile image1,
             @RequestParam(value = "image2", required = false) MultipartFile image2,
             @RequestParam(value = "image3", required = false) MultipartFile image3,
-            @RequestParam(value = "image4", required = false) MultipartFile image4) {
+            @RequestParam(value = "image4", required = false) MultipartFile image4,
+            @RequestParam(value = "image5", required = false) MultipartFile image5,
+            @RequestParam(value = "image6", required = false) MultipartFile image6) {
         try {
+            boolean pair = "TSC_SSC".equals(reportType);
             String safeSN = serialNumber.replaceAll("[^a-zA-Z0-9_\\-]", "_");
-            String prefix = switch (reportType) {
-                case "TRUOC_SCC" -> "TrcSC";
-                case "SAU_SCC" -> "SauSC";
-                case "CHAY_NO" -> "ChayNo";
-                default -> throw new IllegalArgumentException("Loại báo cáo không hợp lệ");
-            };
-            String rawName = prefix + "_" + safeSN + ".docx";
-            String selectedFolder = savePath;
-            Path dest = selectedFolder.isBlank() ? null : storageService.destination(selectedFolder, rawName);
-            // Trả thông báo trước khi xử lý ảnh nếu tên báo cáo đã tồn tại.
-            if (dest != null && Files.exists(dest, LinkOption.NOFOLLOW_LINKS)) return duplicateReport(dest);
             boolean snVerified = excelService.checkSN(serialNumber);
 
-            // Convert MultipartFile → byte[] (để WordService xử lý song song)
-            List<byte[]> imageBytesList = new ArrayList<>();
-            for (MultipartFile mf : new MultipartFile[]{image1, image2, image3, image4}) {
-                imageBytesList.add((mf != null && !mf.isEmpty()) ? mf.getBytes() : null);
+            List<byte[]> rawImages = new ArrayList<>();
+            for (MultipartFile mf : new MultipartFile[]{image1, image2, image3, image4, image5, image6}) {
+                rawImages.add((mf != null && !mf.isEmpty()) ? mf.getBytes() : null);
             }
 
-            byte[] wordBytes = wordService.generateReport(
-                deviceName, productCode, poNumber,
-                reportType, repairNotes, serialNumber, snVerified, imageBytesList
-            );
+            // ── Chế độ cặp: 1 nút → 2 file (TSC + SSC); ảnh chỉ xử lý 1 lần ──
+            if (pair) {
+                if (tscSavePath.isBlank() || sscSavePath.isBlank()) {
+                    return ResponseEntity.badRequest().body(Map.of(
+                        "success", false,
+                        "error", "Cần chọn đủ 2 nơi lưu: TSC và SSC"));
+                }
+                String tscName = "TrcSC_" + safeSN + ".docx";
+                String sscName = "SauSC_" + safeSN + ".docx";
+                Path destTsc = storageService.destination(tscSavePath, tscName);
+                Path destSsc = storageService.destination(sscSavePath, sscName);
+                if (Files.exists(destTsc, LinkOption.NOFOLLOW_LINKS)
+                        || Files.exists(destSsc, LinkOption.NOFOLLOW_LINKS)) {
+                    return duplicatePair(destTsc, destSsc);
+                }
 
-            // ── Đã cấu hình savePath: CHỈ LƯU server-side, không download ──
+                List<byte[]> prepared = wordService.prepareImages(rawImages);
+                // TSC = ảnh 1,2,3,4; SSC = ảnh 1,2,5,6 (ảnh xử lý 1 lần, dùng chung)
+                List<byte[]> tscImages = pickImages(prepared, 0, 1, 2, 3);
+                List<byte[]> sscImages = pickImages(prepared, 0, 1, 4, 5);
+                java.util.concurrent.CompletableFuture<byte[]> tscFuture =
+                    java.util.concurrent.CompletableFuture.supplyAsync(() ->
+                        buildQuietly("TRUOC_SCC", deviceName, productCode, poNumber, "",
+                            serialNumber, snVerified, tscImages));
+                java.util.concurrent.CompletableFuture<byte[]> sscFuture =
+                    java.util.concurrent.CompletableFuture.supplyAsync(() ->
+                        buildQuietly("SAU_SCC", deviceName, productCode, poNumber, repairNotes,
+                            serialNumber, snVerified, sscImages));
+                byte[] tscBytes = tscFuture.join();
+                byte[] sscBytes = sscFuture.join();
+                storageService.saveNew(destTsc, tscBytes);
+                storageService.saveNew(destSsc, sscBytes);
+                return ResponseEntity.ok(Map.of(
+                    "success", true, "saved", true, "pair", true,
+                    "files", List.of(
+                        Map.of("name", tscName, "path", destTsc.toString()),
+                        Map.of("name", sscName, "path", destSsc.toString()))));
+            }
+
+            // ── Chế độ một file ───────────────────────────────────────
+            String wordType = switch (reportType) {
+                case "CHAY_NO" -> "CHAY_NO";
+                case "TRUOC_SCC" -> "TRUOC_SCC";
+                default -> "SAU_SCC";   // SAU_SCC = "Không sửa được"
+            };
+            String prefix = switch (wordType) {
+                case "CHAY_NO" -> "ChayNo";
+                case "TRUOC_SCC" -> "TrcSC";
+                default -> "SauSC";
+            };
+            String rawName = prefix + "_" + safeSN + ".docx";
+            Path dest = singleSavePath.isBlank() ? null
+                : storageService.destination(singleSavePath, rawName);
+            // Trả thông báo trước khi xử lý ảnh nếu tên báo cáo đã tồn tại.
+            if (dest != null && Files.exists(dest, LinkOption.NOFOLLOW_LINKS)) return duplicateReport(dest);
+
+            List<byte[]> prepared = wordService.prepareImages(rawImages);
+            // Cháy Nổ/TSC đơn dùng ảnh 1-4; SSC đơn ("Không sửa được") dùng 1,2,5,6.
+            List<byte[]> chosen = ("CHAY_NO".equals(wordType) || "TRUOC_SCC".equals(wordType))
+                ? pickImages(prepared, 0, 1, 2, 3)
+                : pickImages(prepared, 0, 1, 4, 5);
+            byte[] wordBytes = wordService.buildReport(
+                wordType, deviceName, productCode, poNumber,
+                repairNotes, serialNumber, snVerified, chosen);
+
+            // ── Đã cấu hình nơi lưu: CHỈ LƯU server-side, không download ──
             if (dest != null) {
                 try {
                     storageService.saveNew(dest, wordBytes);
@@ -502,7 +575,7 @@ public class ApiController {
                 }
             }
 
-            // ── Chưa có savePath: trả file để download ──
+            // ── Chưa có nơi lưu: trả file để download ──
             String encodedName = URLEncoder.encode(rawName, StandardCharsets.UTF_8)
                 .replace("+", "%20");
             HttpHeaders headers = new HttpHeaders();
@@ -518,6 +591,39 @@ public class ApiController {
             return ResponseEntity.status(500).body(Map.of(
                 "success", false, "error", e.getMessage()));
         }
+    }
+
+    private List<byte[]> pickImages(List<byte[]> all, int... indexes) {
+        List<byte[]> result = new ArrayList<>();
+        for (int index : indexes) {
+            result.add(index < all.size() ? all.get(index) : null);
+        }
+        return result;
+    }
+
+    private byte[] buildQuietly(String reportType, String deviceName, String productCode,
+            String poNumber, String notes, String serialNumber, boolean snVerified,
+            List<byte[]> images) {
+        try {
+            return wordService.buildReport(reportType, deviceName, productCode, poNumber,
+                notes, serialNumber, snVerified, images);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> duplicatePair(Path tsc, Path ssc) {
+        List<Map<String, String>> existing = new ArrayList<>();
+        if (Files.exists(tsc, LinkOption.NOFOLLOW_LINKS)) {
+            existing.add(Map.of("name", tsc.getFileName().toString(), "path", tsc.toString()));
+        }
+        if (Files.exists(ssc, LinkOption.NOFOLLOW_LINKS)) {
+            existing.add(Map.of("name", ssc.getFileName().toString(), "path", ssc.toString()));
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+            "success", false, "code", "FILE_EXISTS",
+            "error", "File đã tồn tại, vui lòng kiểm tra lại",
+            "files", existing));
     }
 
     private ResponseEntity<Map<String, Object>> duplicateReport(Path path) {

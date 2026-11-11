@@ -51,18 +51,44 @@
         <p class="hint">Duyệt file Excel trong ổ đĩa/thư mục mà máy chủ có quyền truy cập</p>
 
         <div class="setup-divider"></div>
-        <div class="save-path-row">
+        <div class="save-path-row" id="savePathSingleRow">
           <div class="save-path-label">
-            <span>💾</span><span>Nơi Lưu File</span>
+            <span>💾</span><span id="singleSaveLabel">Nơi Lưu File</span>
             <span id="savePathStatus" class="save-path-badge save-path-empty">Chưa chọn</span>
           </div>
           <div class="save-path-input-row">
             <input type="text" id="savePathInput" class="form-input save-path-input"
               placeholder="Nhập hoặc Browse thư mục..." readonly onclick="openBrowser('save')"/>
             <button class="btn btn-blue btn-sm" onclick="openBrowser('save')">📁 Browse</button>
-            <button class="btn btn-outline btn-sm" onclick="clearSavePath()">✕</button>
+            <button class="btn btn-outline btn-sm" onclick="clearSavePath('single')">✕</button>
           </div>
           <p class="hint">Tự động lưu file Word vào thư mục đã chọn</p>
+        </div>
+        <div class="save-path-row hidden" id="savePathTscRow">
+          <div class="save-path-label">
+            <span>💾</span><span>Nơi Lưu TSC (Trước Sửa Chữa)</span>
+            <span id="tscSavePathStatus" class="save-path-badge save-path-empty">Chưa chọn</span>
+          </div>
+          <div class="save-path-input-row">
+            <input type="text" id="tscSavePathInput" class="form-input save-path-input"
+              placeholder="Browse thư mục TSC..." readonly onclick="openBrowser('tsc')"/>
+            <button class="btn btn-blue btn-sm" onclick="openBrowser('tsc')">📁 Browse</button>
+            <button class="btn btn-outline btn-sm" onclick="clearSavePath('tsc')">✕</button>
+          </div>
+          <p class="hint">File TrcSC_&lt;SN&gt;.docx sẽ lưu vào đây</p>
+        </div>
+        <div class="save-path-row hidden" id="savePathSscRow">
+          <div class="save-path-label">
+            <span>💾</span><span>Nơi Lưu SSC (Sau Sửa Chữa)</span>
+            <span id="sscSavePathStatus" class="save-path-badge save-path-empty">Chưa chọn</span>
+          </div>
+          <div class="save-path-input-row">
+            <input type="text" id="sscSavePathInput" class="form-input save-path-input"
+              placeholder="Browse thư mục SSC..." readonly onclick="openBrowser('ssc')"/>
+            <button class="btn btn-blue btn-sm" onclick="openBrowser('ssc')">📁 Browse</button>
+            <button class="btn btn-outline btn-sm" onclick="clearSavePath('ssc')">✕</button>
+          </div>
+          <p class="hint">File SauSC_&lt;SN&gt;.docx sẽ lưu vào đây</p>
         </div>
       </div>
     </section>
@@ -93,22 +119,22 @@
           <label class="form-label req-label">Loại báo cáo <span class="req-star">*</span></label>
           <div class="radio-group">
             <label class="radio-item">
+              <input type="radio" name="reportType" value="TSC_SSC" checked/>
+              <span class="radio-icon">🔧</span><span>Sửa Chữa (TSC + SSC)</span>
+            </label>
+            <label class="radio-item">
               <input type="radio" name="reportType" value="CHAY_NO"/>
               <span class="radio-icon">🔥</span><span>Cháy Nổ</span>
             </label>
             <label class="radio-item">
-              <input type="radio" name="reportType" value="SAU_SCC" checked/>
-              <span class="radio-icon">🔧</span><span>Sau Sửa Chữa</span>
-            </label>
-            <label class="radio-item">
-              <input type="radio" name="reportType" value="TRUOC_SCC"/>
-              <span class="radio-icon">🔍</span><span>Trước Sửa Chữa</span>
+              <input type="radio" name="reportType" value="SAU_SSC"/>
+              <span class="radio-icon">🚫</span><span>Không sửa được</span>
             </label>
           </div>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Lỗi đã sửa chữa <span class="opt-label">(không bắt buộc)</span></label>
+          <label class="form-label">Lỗi đã sửa chữa <span class="opt-label">(ghi vào tất cả file trừ TSC)</span></label>
           <textarea id="repairNotes" class="form-input form-textarea" placeholder="Nhập ghi chú/lỗi đã sửa..."></textarea>
         </div>
 
@@ -139,8 +165,8 @@
     <div class="card">
       <div class="card-header">
         <span class="step-badge">3</span>
-        <span class="step-title">HÌNH ẢNH <span class="hint-inline">(Yêu cầu 4 ảnh)</span></span>
-        <span id="imgCounter" class="img-counter">0 / 4</span>
+        <span class="step-title">HÌNH ẢNH <span class="hint-inline" id="imgReqHint">(Yêu cầu 6 ảnh)</span></span>
+        <span id="imgCounter" class="img-counter">0 / 6</span>
       </div>
       <div class="card-body">
         <div class="image-grid">
@@ -179,11 +205,11 @@
             </div>
           </div>
 
-          <!-- Ảnh 3: Mặt Trước (có folder input) -->
+          <!-- Ảnh 3: TSC 1 (có folder input) -->
           <div class="img-slot" id="slot3">
             <div class="img-slot-header">
               <span class="img-slot-num">3.</span>
-              <span class="img-slot-label">📱 Ảnh Mặt Trước</span>
+              <span class="img-slot-label">🎲 Ảnh TSC 1</span>
               <div class="img-slot-actions">
                 <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img3Gallery" accept="image/*" class="img-file-input"/></label>
                 <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img3Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
@@ -195,20 +221,21 @@
             <div class="img-folder-row">
               <span class="img-folder-icon">📂</span>
               <input type="text" id="folder3" class="img-folder-input" readonly
-                placeholder="Folder ảnh mặt trước..." onclick="openBrowser('folder3')"/>
+                placeholder="Folder ảnh TSC 1..." onclick="openBrowser('folder3')"/>
               <button class="btn-icon-sm" onclick="openBrowser('folder3')" title="Chọn folder">📁</button>
               <button class="btn-icon-sm btn-clear-sm" onclick="clearFolder(3)" title="Xóa">✕</button>
+              <button class="btn-icon-sm" onclick="randomSlot(3)" title="Random ảnh trong folder này">🎲</button>
             </div>
             <div class="img-preview-area" id="preview3">
               <span class="placeholder-text">[Chưa chọn ảnh]</span>
             </div>
           </div>
 
-          <!-- Ảnh 4: Mặt Sau (có folder input) -->
+          <!-- Ảnh 4: TSC 2 (có folder input) -->
           <div class="img-slot" id="slot4">
             <div class="img-slot-header">
               <span class="img-slot-num">4.</span>
-              <span class="img-slot-label">📱 Ảnh Mặt Sau</span>
+              <span class="img-slot-label">🎲 Ảnh TSC 2</span>
               <div class="img-slot-actions">
                 <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img4Gallery" accept="image/*" class="img-file-input"/></label>
                 <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img4Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
@@ -220,11 +247,62 @@
             <div class="img-folder-row">
               <span class="img-folder-icon">📂</span>
               <input type="text" id="folder4" class="img-folder-input" readonly
-                placeholder="Folder ảnh mặt sau..." onclick="openBrowser('folder4')"/>
+                placeholder="Folder ảnh TSC 2..." onclick="openBrowser('folder4')"/>
               <button class="btn-icon-sm" onclick="openBrowser('folder4')" title="Chọn folder">📁</button>
               <button class="btn-icon-sm btn-clear-sm" onclick="clearFolder(4)" title="Xóa">✕</button>
+              <button class="btn-icon-sm" onclick="randomSlot(4)" title="Random ảnh trong folder này">🎲</button>
             </div>
             <div class="img-preview-area" id="preview4">
+              <span class="placeholder-text">[Chưa chọn ảnh]</span>
+            </div>
+          </div>
+
+          <!-- Ảnh 5: SSC 1 (có folder input) -->
+          <div class="img-slot" id="slot5">
+            <div class="img-slot-header">
+              <span class="img-slot-num">5.</span>
+              <span class="img-slot-label">🎲 Ảnh SSC 1</span>
+              <div class="img-slot-actions">
+                <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img5Gallery" accept="image/*" class="img-file-input"/></label>
+                <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img5Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
+                <button class="btn-icon btn-rotate" onclick="rotateImage(5)" title="Xoay 90°">↻</button>
+                <button class="btn-icon btn-clear" onclick="clearImage(5)" title="Xóa">✕</button>
+              </div>
+            </div>
+            <div class="img-folder-row">
+              <span class="img-folder-icon">📂</span>
+              <input type="text" id="folder5" class="img-folder-input" readonly
+                placeholder="Folder ảnh SSC 1..." onclick="openBrowser('folder5')"/>
+              <button class="btn-icon-sm" onclick="openBrowser('folder5')" title="Chọn folder">📁</button>
+              <button class="btn-icon-sm btn-clear-sm" onclick="clearFolder(5)" title="Xóa">✕</button>
+              <button class="btn-icon-sm" onclick="randomSlot(5)" title="Random ảnh trong folder này">🎲</button>
+            </div>
+            <div class="img-preview-area" id="preview5">
+              <span class="placeholder-text">[Chưa chọn ảnh]</span>
+            </div>
+          </div>
+
+          <!-- Ảnh 6: SSC 2 (có folder input) -->
+          <div class="img-slot" id="slot6">
+            <div class="img-slot-header">
+              <span class="img-slot-num">6.</span>
+              <span class="img-slot-label">🎲 Ảnh SSC 2</span>
+              <div class="img-slot-actions">
+                <label class="btn-icon" title="Chọn file">🖼️<input type="file" id="img6Gallery" accept="image/*" class="img-file-input"/></label>
+                <label class="btn-icon btn-camera" title="Chụp ảnh">📸<input type="file" id="img6Camera" accept="image/*" capture="environment" class="img-file-input"/></label>
+                <button class="btn-icon btn-rotate" onclick="rotateImage(6)" title="Xoay 90°">↻</button>
+                <button class="btn-icon btn-clear" onclick="clearImage(6)" title="Xóa">✕</button>
+              </div>
+            </div>
+            <div class="img-folder-row">
+              <span class="img-folder-icon">📂</span>
+              <input type="text" id="folder6" class="img-folder-input" readonly
+                placeholder="Folder ảnh SSC 2..." onclick="openBrowser('folder6')"/>
+              <button class="btn-icon-sm" onclick="openBrowser('folder6')" title="Chọn folder">📁</button>
+              <button class="btn-icon-sm btn-clear-sm" onclick="clearFolder(6)" title="Xóa">✕</button>
+              <button class="btn-icon-sm" onclick="randomSlot(6)" title="Random ảnh trong folder này">🎲</button>
+            </div>
+            <div class="img-preview-area" id="preview6">
               <span class="placeholder-text">[Chưa chọn ảnh]</span>
             </div>
           </div>
@@ -243,7 +321,7 @@
   <div class="bottom-actions">
     <div id="statusMsg" class="status-msg">Sẵn sàng</div>
     <div class="bottom-btn-group">
-      <button class="btn-random" onclick="randomImages()" title="Random ảnh từ 2 folder mặt trước/sau">
+      <button class="btn-random" onclick="randomImages()" title="Random ảnh từ các folder đã chọn">
         🎲 Random<span class="hide-mobile"> Ảnh</span>
       </button>
       <button id="exportBtn" class="btn-export" onclick="exportReport()">
@@ -486,6 +564,6 @@
     <button id="noticeClose" class="btn btn-blue" autofocus>Đóng</button>
   </form>
 </dialog>
-<script src="/js/app.js?v=49"></script>
+<script src="/js/app.js?v=50"></script>
 </body>
 </html>

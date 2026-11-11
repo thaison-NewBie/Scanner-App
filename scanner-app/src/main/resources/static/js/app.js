@@ -1,12 +1,14 @@
 // ── STATE ─────────────────────────────────────────────────────
 const state = {
-  images:       { 1: null, 2: null, 3: null, 4: null },
-  rotations:    { 1: 0,    2: 0,    3: 0,    4: 0    },
-  imageFolders: { 3: '',   4: '' },
+  images:       { 1: null, 2: null, 3: null, 4: null, 5: null, 6: null },
+  rotations:    { 1: 0,    2: 0,    3: 0,    4: 0,    5: 0,    6: 0    },
+  imageFolders: { 3: '',   4: '',   5: '',   6: '' },
   lastImageFolder: '',
   excelFolder:  '',
   excelLoaded:  false,
-  savePath:     '',
+  savePath:     '',     // nơi lưu chế độ 1 file (Cháy Nổ / Không sửa được)
+  tscSavePath:  '',
+  sscSavePath:  '',
   capturesRoot: '',
   // Dùng khi xuất file
   pendingExport: null,    // { formData, serialNumber }
@@ -51,7 +53,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('input[name=reportType]').forEach(r => {
     r.addEventListener('change', updateProgress);
     r.addEventListener('change', updateRepairNotesState);
+    r.addEventListener('change', applyReportMode);
   });
+  applyReportMode();
   updateProgress();
   updateRepairNotesState();
 });
@@ -64,19 +68,51 @@ async function resetServerSession() {
 
 // Reset ở lần mở trang kế tiếp; không gửi beacon trễ có thể xóa phiên vừa tải lại.
 
-// ── GHI CHÚ — chỉ bật khi Cháy Nổ hoặc Sau Sửa Chữa ─────────
+// ── GHI CHÚ — hiện ở mọi chế độ, ghi vào mọi file trừ TSC ─────────
 function updateRepairNotesState() {
-  const type     = document.querySelector('input[name=reportType]:checked')?.value;
-  const notes    = $('repairNotes');
-  const group    = notes?.closest('.form-group');
-  const disabled = (type === 'TRUOC_SCC');
+  const notes = $('repairNotes');
   if (!notes) return;
-  notes.disabled    = disabled;
-  notes.placeholder = disabled ? '⛔ Không áp dụng cho Trước Sửa Chữa' : 'Nhập ghi chú/lỗi đã sửa...';
-  notes.style.opacity = disabled ? '0.35' : '1';
-  notes.style.cursor  = disabled ? 'not-allowed' : '';
-  if (group) group.style.opacity = disabled ? '0.5' : '1';
-  if (disabled) notes.value = '';
+  notes.disabled = false;
+  notes.style.opacity = '1';
+  notes.style.cursor = '';
+  const group = notes.closest('.form-group');
+  if (group) group.style.opacity = '1';
+}
+
+/** Bật/tắt các ô ảnh và nơi lưu theo chế độ báo cáo. */
+function applyReportMode() {
+  const mode = document.querySelector('input[name=reportType]:checked')?.value || 'TSC_SSC';
+  const pair   = mode === 'TSC_SSC';
+  const chayno = mode === 'CHAY_NO';
+  const showSingle = !pair;
+
+  $('slot3').style.display = (pair || chayno) ? '' : 'none';
+  $('slot4').style.display = (pair || chayno) ? '' : 'none';
+  $('slot5').style.display = (pair || mode === 'SAU_SSC') ? '' : 'none';
+  $('slot6').style.display = (pair || mode === 'SAU_SSC') ? '' : 'none';
+
+  // Nhãn slot 3/4 đổi theo chế độ Cháy Nổ (Mặt Trước / Mặt Sau).
+  const label3 = $('slot3').querySelector('.img-slot-label');
+  const label4 = $('slot4').querySelector('.img-slot-label');
+  if (label3) label3.textContent = chayno ? '📱 Ảnh Mặt Trước' : '🎲 Ảnh TSC 1';
+  if (label4) label4.textContent = chayno ? '📱 Ảnh Mặt Sau'  : '🎲 Ảnh TSC 2';
+
+  $('savePathSingleRow').classList.toggle('hidden', !showSingle);
+  $('savePathTscRow').classList.toggle('hidden', !pair);
+  $('savePathSscRow').classList.toggle('hidden', !pair);
+  $('singleSaveLabel').textContent = chayno ? 'Nơi Lưu File Cháy Nổ' : 'Nơi Lưu File SSC (Không sửa được)';
+
+  const need = pair ? 6 : 4;
+  $('imgReqHint').textContent = `(Yêu cầu ${need} ảnh)`;
+  updateProgress();
+}
+
+/** Danh sách slot ảnh đang dùng ở chế độ hiện tại. */
+function activeSlots() {
+  const mode = document.querySelector('input[name=reportType]:checked')?.value || 'TSC_SCC';
+  if (mode === 'TSC_SSC') return [1, 2, 3, 4, 5, 6];
+  if (mode === 'CHAY_NO') return [1, 2, 3, 4];
+  return [1, 2, 5, 6];   // SAU_SSC (Không sửa được)
 }
 
 
@@ -272,13 +308,17 @@ async function openBrowser(target) {
   const isLocalWindows = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '::1';
   const rememberedPath = target === 'save'
     ? state.savePath
-    : (state.lastImageFolder || state.imageFolders[parseInt(target.replace('folder', ''))]);
+    : (target === 'tsc'
+      ? state.tscSavePath
+      : (target === 'ssc'
+        ? state.sscSavePath
+        : (state.lastImageFolder || state.imageFolders[parseInt(target.replace('folder', ''))])));
   // Explorer trên laptop luôn bắt đầu từ ổ C: khi chưa có vị trí đã chọn.
   // Bộ chọn web bắt đầu từ danh sách ổ đĩa khi app được phép chọn mọi nơi.
   const foldersUnrestricted = config.foldersUnrestricted || !config.nasMode;
   const initial = rememberedPath || (isLocalWindows
     ? 'C:\\'
-    : (foldersUnrestricted ? '' : (target === 'save' ? (config.reportsRoot || '') : (config.imagesRoot || ''))));
+    : (foldersUnrestricted ? '' : (['save', 'tsc', 'ssc'].includes(target) ? (config.reportsRoot || '') : (config.imagesRoot || ''))));
 
   // Nếu người dùng đang ngồi trực tiếp trên máy chủ (localhost), dùng hộp thoại Windows gốc cho nhanh
   // Khi dùng trực tiếp trên máy Windows chạy app, mở Explorer gốc như ứng dụng desktop.
@@ -294,9 +334,11 @@ async function openBrowser(target) {
         return;
       }
       if (data.path) {
-        if (target === 'save') {
-          $('savePathInput').value = data.path;
-          setSavePath(data.path);
+        if (target === 'save' || target === 'tsc' || target === 'ssc') {
+          const type = target === 'tsc' ? 'tsc' : (target === 'ssc' ? 'ssc' : 'single');
+          const inputId = type === 'tsc' ? 'tscSavePathInput' : (type === 'ssc' ? 'sscSavePathInput' : 'savePathInput');
+          $(inputId).value = data.path;
+          setSavePath(data.path, type);
         } else {
           const slot = parseInt(target.replace('folder', ''));
           state.imageFolders[slot] = data.path;
@@ -332,7 +374,7 @@ function closeBrowser() {
 
 async function browseTo(path) {
   const request = ++_browseRequest;
-  const purpose = _browserTarget === 'save' ? 'reports' : 'images';
+  const purpose = ['save', 'tsc', 'ssc'].includes(_browserTarget) ? 'reports' : 'images';
   $('folderList').innerHTML = '<div class="folder-loading">Đang tải...</div>';
   $('confirmFolderBtn').disabled = true;
   _selectedFolderPath = '';
@@ -425,36 +467,46 @@ async function confirmFolder() {
   
   if (_browserTarget === 'save') {
     $('savePathInput').value = _selectedFolderPath;
-    if (!await setSavePath(_selectedFolderPath)) return;
+    if (!await setSavePath(_selectedFolderPath, 'single')) return;
+  } else if (_browserTarget === 'tsc') {
+    $('tscSavePathInput').value = _selectedFolderPath;
+    if (!await setSavePath(_selectedFolderPath, 'tsc')) return;
+  } else if (_browserTarget === 'ssc') {
+    $('sscSavePathInput').value = _selectedFolderPath;
+    if (!await setSavePath(_selectedFolderPath, 'ssc')) return;
   } else {
     const slot = parseInt(_browserTarget.replace('folder', ''));
     $(`folder${slot}`).value = _selectedFolderPath;
     state.imageFolders[slot] = _selectedFolderPath;
     rememberPickerPath(_selectedFolderPath);
-    addLog(`📂 Folder ${slot === 3 ? 'Mặt Trước' : 'Mặt Sau'}: ${_selectedFolderPath}`);
+    addLog(`📂 Folder ảnh ${slot}: ${_selectedFolderPath}`);
   }
   
   closeBrowser();
 }
 
 // ── SAVE PATH ─────────────────────────────────────────────────
-async function setSavePath(path) {
-  path = path || $('savePathInput').value.trim();
-  const badge = $('savePathStatus');
-  if (!path) { clearSavePath(); return; }
+async function setSavePath(path, type = 'single') {
+  const inputId = type === 'tsc' ? 'tscSavePathInput' : (type === 'ssc' ? 'sscSavePathInput' : 'savePathInput');
+  const badgeId = type === 'tsc' ? 'tscSavePathStatus' : (type === 'ssc' ? 'sscSavePathStatus' : 'savePathStatus');
+  path = path || $(inputId).value.trim();
+  const badge = $(badgeId);
+  if (!path) { clearSavePath(type); return; }
   showLoading('Đang kiểm tra thư mục...');
   try {
     const res  = await fetch('/api/config/save-path', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path })
+      body: JSON.stringify({ path, type })
     });
     const data = await res.json();
     if (data.success) {
-      state.savePath    = data.path;
-      $('savePathInput').value = data.path;
+      if (type === 'tsc') state.tscSavePath = data.path;
+      else if (type === 'ssc') state.sscSavePath = data.path;
+      else state.savePath = data.path;
+      $(inputId).value = data.path;
       badge.textContent = '✓ Đã chọn';
       badge.className   = 'save-path-badge save-path-ok';
-      addLog(`💾 Nơi lưu file: ${path}`);
+      addLog(`💾 Nơi lưu ${type === 'tsc' ? 'TSC' : (type === 'ssc' ? 'SSC' : 'file')}: ${path}`);
       return true;
     } else {
       badge.textContent = '✗ Lỗi';
@@ -466,18 +518,22 @@ async function setSavePath(path) {
     addLog('❌ ' + e.message);
     showNotice('Không chọn được nơi lưu', e.message);
   } finally { hideLoading(); }
-  $('savePathInput').value = state.savePath;
+  $(inputId).value = type === 'tsc' ? state.tscSavePath : (type === 'ssc' ? state.sscSavePath : state.savePath);
   return false;
 }
 
-async function clearSavePath() {
-  $('savePathInput').value = '';
-  $('savePathStatus').textContent = 'Chưa chọn';
-  $('savePathStatus').className   = 'save-path-badge save-path-empty';
-  state.savePath = '';
+async function clearSavePath(type = 'single') {
+  const inputId = type === 'tsc' ? 'tscSavePathInput' : (type === 'ssc' ? 'sscSavePathInput' : 'savePathInput');
+  const badgeId = type === 'tsc' ? 'tscSavePathStatus' : (type === 'ssc' ? 'sscSavePathStatus' : 'savePathStatus');
+  $(inputId).value = '';
+  $(badgeId).textContent = 'Chưa chọn';
+  $(badgeId).className   = 'save-path-badge save-path-empty';
+  if (type === 'tsc') state.tscSavePath = '';
+  else if (type === 'ssc') state.sscSavePath = '';
+  else state.savePath = '';
   await fetch('/api/config/save-path', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: '' })
+    body: JSON.stringify({ path: '', type })
   });
   addLog('💾 Đã xóa nơi lưu file');
 }
@@ -492,7 +548,7 @@ function clearFolder(slot) {
 function setupImageInputs() {
   const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 
-  [1,2,3,4].forEach(n => {
+  [1,2,3,4,5,6].forEach(n => {
     const inp  = $(`img${n}`);
     const gal  = $(`img${n}Gallery`);
     const cam  = $(`img${n}Camera`);
@@ -1073,11 +1129,11 @@ let _randomBusy = false;
 
 async function randomImages() {
   if (_randomBusy) return;
-  const f3 = state.imageFolders[3];
-  const f4 = state.imageFolders[4];
-  if (!f3 && !f4) {
-    addLog('⚠ Chưa chọn folder ảnh cho Mặt Trước hoặc Mặt Sau');
-    setStatusMsg('⚠ Cần chọn folder ảnh ở slot 3 hoặc 4', 'warn');
+  // Chỉ random các ô folder đang hiển thị ở chế độ hiện tại và đã chọn folder.
+  const targets = activeSlots().filter(n => n >= 3 && state.imageFolders[n]);
+  if (!targets.length) {
+    addLog('⚠ Chưa chọn folder ảnh cho các ô trong chế độ này');
+    setStatusMsg('⚠ Cần chọn folder ảnh trước', 'warn');
     return;
   }
   _randomBusy = true;
@@ -1085,9 +1141,7 @@ async function randomImages() {
   if (button) button.disabled = true;
   showLoading('Đang chọn ảnh ngẫu nhiên...');
   try {
-    const tasks = [];
-    if (f3) tasks.push(loadRandomImage(3, f3));
-    if (f4) tasks.push(loadRandomImage(4, f4));
+    const tasks = targets.map(n => loadRandomImage(n, state.imageFolders[n]));
     const results = await Promise.all(tasks);
     const loaded = results.filter(Boolean).length;
     if (loaded === tasks.length) {
@@ -1102,6 +1156,19 @@ async function randomImages() {
     if (button) button.disabled = false;
     hideLoading();
   }
+}
+
+/** Random ảnh chỉ cho MỘT slot (nút 🎲 cạnh từng ô folder). */
+async function randomSlot(slot) {
+  const folder = state.imageFolders[slot];
+  if (!folder) {
+    addLog(`⚠ Slot ${slot}: chưa chọn folder`);
+    setStatusMsg(`⚠ Slot ${slot}: chọn folder trước`, 'warn');
+    return;
+  }
+  showLoading('Đang chọn ảnh ngẫu nhiên...');
+  try { await loadRandomImage(slot, folder); }
+  finally { hideLoading(); }
 }
 
 async function loadRandomImage(slot, folder) {
@@ -1138,10 +1205,11 @@ function updateProgress() {
   if ($('poNumber').value.trim())      score += 15;
   if ($('serialManual').value.trim())  score += 10;
   const imgCount = Object.values(state.images).filter(Boolean).length;
-  score += imgCount * 7;   // max 28
+  score += imgCount * 7;   // tối đa 42 (6 ảnh)
 
   $('progressBar').style.width  = Math.min(score, 100) + '%';
-  $('imgCounter').textContent   = `${imgCount} / 4`;
+  const need = activeSlots().length;
+  $('imgCounter').textContent   = `${imgCount} / ${need}`;
   $('statusMsg').textContent    = `Tiến trình: ${Math.min(score, 100)}%`;
 }
 
@@ -1185,15 +1253,20 @@ async function checkAndExportReport() {
   if (!productCode) errors.push('Mã Hàng Hóa');
   if (!poNumber)    errors.push('Số PO');
   if (!reportType)  errors.push('Loại báo cáo');
+  if (reportType === 'TSC_SSC') {
+    if (!state.tscSavePath) errors.push('Nơi lưu TSC');
+    if (!state.sscSavePath) errors.push('Nơi lưu SSC');
+  }
   if (errors.length) {
     addLog('⚠ Thiếu: ' + errors.join(', '));
     setStatusMsg('⚠ Vui lòng điền đầy đủ thông tin bắt buộc!', 'warn');
     return;
   }
 
-  const imgCount = Object.values(state.images).filter(Boolean).length;
-  if (imgCount < 4) {
-    if (!confirm(`Bạn chỉ có ${imgCount}/4 ảnh. Vẫn tiếp tục xuất file?`)) return;
+  const need = activeSlots().length;
+  const imgCount = activeSlots().filter(n => state.images[n]).length;
+  if (imgCount < need) {
+    if (!confirm(`Bạn chỉ có ${imgCount}/${need} ảnh. Vẫn tiếp tục xuất file?`)) return;
   }
 
   // Nếu không nhập Serial thủ công → kiểm tra OCR
@@ -1284,7 +1357,7 @@ async function doExport(serialNumber, options = {}) {
 
   // ── Nén tất cả ảnh trước khi upload (để giảm thời gian tạo Word) ──
   const compressedImages = {};
-  await Promise.all([1, 2, 3, 4].map(async n => {
+  await Promise.all([1, 2, 3, 4, 5, 6].map(async n => {
     if (!state.images[n]) return;
     try {
       compressedImages[n] = await compressImageForWord(state.images[n]);
@@ -1307,7 +1380,7 @@ async function doExport(serialNumber, options = {}) {
   form.append('reportType',   reportType);
   form.append('repairNotes',  repairNotes);
   form.append('serialNumber', serialNumber || '');
-  [1,2,3,4].forEach(n => { if (compressedImages[n]) form.append(`image${n}`, compressedImages[n], `image${n}.jpg`); });
+  [1,2,3,4,5,6].forEach(n => { if (compressedImages[n]) form.append(`image${n}`, compressedImages[n], `image${n}.jpg`); });
 
   try {
     const res = await fetch('/api/report/generate', { method: 'POST', body: form });
@@ -1317,18 +1390,27 @@ async function doExport(serialNumber, options = {}) {
     if (contentType.includes('application/json')) {
       const data = await res.json();
       if (res.status === 409 && data.code === 'FILE_EXISTS') {
-        showNotice('File đã tồn tại, vui lòng kiểm tra lại', data.savedPath || data.filename);
-        addLog('⚠ File đã tồn tại: ' + data.filename);
+        const names = data.files ? data.files.map(f => f.name).join(', ') : (data.filename || '');
+        showNotice('File đã tồn tại, vui lòng kiểm tra lại', names);
+        addLog('⚠ File đã tồn tại: ' + names);
         setStatusMsg('⚠ File đã tồn tại, vui lòng kiểm tra lại', 'err');
         return; // Giữ nguyên ảnh và dữ liệu để người dùng kiểm tra.
       }
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Server lỗi ' + res.status);
       }
-      // Hiển thị thông báo lưu thành công (không download)
-      addLog(`💾 Đã lưu: ${data.savedPath}`);
-      setStatusMsg(`✅ Lưu thành công: ${data.filename}`, 'ok');
-      showSavedToast(data.filename, data.savedPath);
+      if (data.files && data.files.length) {
+        // Chế độ cặp: 2 file đã lưu ở 2 thư mục
+        for (const f of data.files) addLog(`💾 Đã lưu: ${f.name} → ${f.path}`);
+        setStatusMsg(`✅ Đã lưu ${data.files.length} file (TSC + SSC)`, 'ok');
+        showSavedToast(data.files.map(f => f.name).join(' + '),
+                       data.files.map(f => f.path).join('\n'));
+      } else {
+        // Hiển thị thông báo lưu thành công (không download)
+        addLog(`💾 Đã lưu: ${data.savedPath}`);
+        setStatusMsg(`✅ Lưu thành công: ${data.filename}`, 'ok');
+        showSavedToast(data.filename, data.savedPath);
+      }
     } else {
       // ── Trả blob → download (chưa cấu hình savePath) ──
       if (!res.ok) throw new Error('Server lỗi ' + res.status);

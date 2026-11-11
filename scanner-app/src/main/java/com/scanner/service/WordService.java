@@ -43,32 +43,34 @@ public class WordService {
         Executors.newFixedThreadPool(4);
 
     /**
-     * Tạo báo cáo Word.
-     * @param imageBytesList  Danh sách 4 ảnh dưới dạng byte[] (null = không có ảnh)
+     * Xử lý ảnh (EXIF/cắt/nén) MỘT lần để dùng chung cho nhiều file Word.
+     * Mỗi ảnh chạy trên 1 thread riêng, tổng thời gian ≈ ảnh chậm nhất.
      */
-    public byte[] generateReport(
-            String deviceName, String productCode, String poNumber,
-            String reportType, String repairNotes,
-            String serialNumber, boolean snVerified,
-            List<byte[]> imageBytesList) throws IOException, InvalidFormatException {
-
-        // ── Xử lý EXIF song song cho tất cả 4 ảnh ─────────────────────────
-        // Mỗi ảnh được xử lý trên 1 thread riêng, tổng thời gian ≈ thời gian ảnh chậm nhất
+    public List<byte[]> prepareImages(List<byte[]> imageBytesList) {
         List<CompletableFuture<byte[]>> futures = new ArrayList<>();
-        for (byte[] raw : imageBytesList) {
-            byte[] capture = raw; // effectively-final for lambda
+        for (byte[] capture : imageBytesList) {
             futures.add(CompletableFuture.supplyAsync(
                 () -> capture != null ? correctExifOrientation(capture) : null,
                 IMAGE_POOL
             ));
         }
-
-        // Chờ tất cả hoàn thành
         List<byte[]> corrected = new ArrayList<>();
         for (CompletableFuture<byte[]> f : futures) {
             try { corrected.add(f.get()); }
             catch (Exception e) { corrected.add(null); }
         }
+        return corrected;
+    }
+
+    /**
+     * Tạo báo cáo Word từ danh sách ảnh ĐÃ xử lý (đúng 4 ảnh, null = không có ảnh).
+     * Tách khỏi generateReport để chế độ TSC+SSC chỉ xử lý ảnh một lần rồi
+     * tạo 2 file từ cùng bộ ảnh.
+     */
+    public byte[] buildReport(
+            String reportType, String deviceName, String productCode, String poNumber,
+            String repairNotes, String serialNumber, boolean snVerified,
+            List<byte[]> corrected) throws IOException, InvalidFormatException {
 
         // ── Tạo tài liệu Word ───────────────────────────────────────────────
         try (XWPFDocument doc = new XWPFDocument()) {
@@ -135,6 +137,16 @@ public class WordService {
             doc.write(out);
             return out.toByteArray();
         }
+    }
+
+    /** Tạo một báo cáo đơn từ ảnh gốc (chế độ một file). */
+    public byte[] generateReport(
+            String deviceName, String productCode, String poNumber,
+            String reportType, String repairNotes,
+            String serialNumber, boolean snVerified,
+            List<byte[]> imageBytesList) throws IOException, InvalidFormatException {
+        return buildReport(reportType, deviceName, productCode, poNumber,
+            repairNotes, serialNumber, snVerified, prepareImages(imageBytesList));
     }
 
     // ── EXIF Correction ──────────────────────────────────────────────────────
