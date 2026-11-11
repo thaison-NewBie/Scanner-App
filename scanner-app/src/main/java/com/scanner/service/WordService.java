@@ -110,7 +110,10 @@ public class WordService {
                     ParagraphAlignment.LEFT);
             }
 
-            doc.createParagraph();
+            // Khoảng cách giữa bảng thông tin và bảng ảnh: giữ một dòng trống
+            // và cộng thêm 12pt để tách rõ như mẫu Word của bản desktop.
+            XWPFParagraph spacer = doc.createParagraph();
+            spacer.setSpacingAfter(240);
 
             // ── Bảng ảnh ─────────────────────────────────────────────────
             String[] caps = getCaptions(reportType);
