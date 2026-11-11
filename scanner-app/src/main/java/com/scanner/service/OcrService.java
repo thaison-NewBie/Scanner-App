@@ -207,44 +207,34 @@ public class OcrService {
     }
 
     private boolean ensureServerReady() {
-        if (serverProcess != null && serverProcess.isAlive()) {
-            int status = healthStatus();
-            if (status == 200) return true;
-            if (status == 500) {
-                System.err.println("[OCR-SERVER] Engine lỗi: " + lastHealthError);
-                killServer();
-                return false;
-            }
-            killServer();
-        }
         synchronized (SERVER_LOCK) {
-            if (serverProcess != null && serverProcess.isAlive()) return healthStatus() == 200;
-            if (!Files.exists(ocrServerScript)) {
-                System.err.println("[OCR-SERVER] Thiếu ocr_server.py tại " + ocrServerScript);
-                return false;
-            }
-            try {
-                ProcessBuilder pb = new ProcessBuilder(
-                    pythonExe, ocrServerScript.toString(), "--port", String.valueOf(serverPort));
-                pb.redirectErrorStream(true);
-                pb.redirectOutput(ProcessBuilder.Redirect.appendTo(ocrServerLog.toFile()));
-                serverProcess = pb.start();
-            } catch (IOException e) {
-                System.err.println("[OCR-SERVER] Không khởi động được: " + e.getMessage());
-                return false;
-            }
             long deadline = System.currentTimeMillis() + SERVER_READY_TIMEOUT_MS;
+            if (serverProcess == null || !serverProcess.isAlive()) {
+                if (!Files.exists(ocrServerScript)) {
+                    System.err.println("[OCR-SERVER] Thiếu ocr_server.py tại " + ocrServerScript);
+                    return false;
+                }
+                try {
+                    ProcessBuilder pb = new ProcessBuilder(
+                        pythonExe, ocrServerScript.toString(), "--port", String.valueOf(serverPort));
+                    pb.redirectErrorStream(true);
+                    pb.redirectOutput(ProcessBuilder.Redirect.appendTo(ocrServerLog.toFile()));
+                    serverProcess = pb.start();
+                } catch (IOException e) {
+                    System.err.println("[OCR-SERVER] Không khởi động được: " + e.getMessage());
+                    return false;
+                }
+            }
+            // Chờ daemon mở cổng và nạp xong model. KHÔNG kill khi healthStatus
+            // == 0: lúc đó daemon còn đang nạp model (30-60s trên CPU yếu).
             while (System.currentTimeMillis() < deadline) {
-                if (!serverProcess.isAlive()) {
+                if (serverProcess == null || !serverProcess.isAlive()) {
                     System.err.println("[OCR-SERVER] Tiến trình thoát sớm; xem " + ocrServerLog);
-                    killServer();
                     return false;
                 }
                 int status = healthStatus();
                 if (status == 200) return true;
                 if (status == 500) {
-                    // Engine báo lỗi nạp model (thiếu thư viện, model hỏng...):
-                    // dừng chờ ngay thay vì treo cả phút.
                     System.err.println("[OCR-SERVER] Engine lỗi: " + lastHealthError);
                     killServer();
                     return false;
@@ -256,7 +246,7 @@ public class OcrService {
                     return false;
                 }
             }
-            System.err.println("[OCR-SERVER] Quá thời gian chờ sẵn sàng; dùng CLI fallback.");
+            System.err.println("[OCR-SERVER] Quá thời gian chờ sẵn sàng; xem " + ocrServerLog);
             return false;
         }
     }
